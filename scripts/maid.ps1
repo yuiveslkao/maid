@@ -52,8 +52,12 @@ $env:HF_HOME = "$Rt\cache\huggingface"
 $env:MODELSCOPE_CACHE = "$Rt\cache\modelscope"
 $env:TORCH_HOME = "$Rt\cache\torch"
 $env:OLLAMA_MODELS = $P.OllamaModel
-$env:OLLAMA_HOST = "127.0.0.1:11434"
-$env:PYTHONUNBUFFERED = "1"   # ログがすぐファイルに出るように
+# 本物の Ollama は 11436 で動かし、いつもの 11434 には「頭脳の中継」(bridge\llm_proxy.py) を置く。
+# 中継が「考えるモード」を切るので返事が速くなる。Open-LLM-VTuber の設定は 11434 のままでよい。
+$OllamaPort = 11436
+$env:OLLAMA_HOST = "127.0.0.1:$OllamaPort"
+$env:OLLAMA_KEEP_ALIVE = "-1"   # モデルを GPU に載せっぱなしにする（外れると読み込み直しに 1 分以上かかる）
+$env:PYTHONUNBUFFERED = "1"
 $env:PATH = "$Rt\uv;$Rt\uv-tools\bin;$Rt\ollama;$env:PATH"
 
 function Say([string]$msg, [string]$color = "Gray") { Write-Host $msg -ForegroundColor $color }
@@ -100,20 +104,43 @@ function Find-AivisExe {
     return $null
 }
 
-# 裏で動く部品はウィンドウを出さず、ログを runtime\logs\ に書く。
-# このウィンドウにぶら下がるので、このウィンドウを閉じる / Ctrl+C で一緒に止まる。
-function Start-Background([string]$Name, [string]$Exe, [string[]]$ArgList) {
-    $logs = "$Rt\logs"
-    New-Item -ItemType Directory -Force -Path $logs | Out-Null
-    Start-Process -FilePath $Exe -ArgumentList $ArgList -NoNewWindow `
-        -RedirectStandardOutput "$logs\$Name.log" -RedirectStandardError "$logs\$Name.err.log" | Out-Null
+# 裏で動く部品は、それぞれ最小化したウィンドウで動かす。
+# 落ちたときはウィンドウが閉じずにエラーが読めるよう、失敗したら pause する。
+function Start-Window([string]$Title, [string]$Exe, [string[]]$ArgList) {
+    $cmdline = "`"$Exe`" " + ($ArgList -join " ")
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/s /c `"title maid-$Title & $cmdline || pause`"" -WindowStyle Minimized
 }
 
-function Start-Ollama {
-    if (Test-Port 11434) { return }
-    if (-not (Test-Path $P.Ollama)) { throw "Ollama がありません。先に maid.bat setup を実行してください。" }
-    Start-Background "ollama" $P.Ollama @("serve")
-    if (-not (Wait-Port 11434 60 "Ollama")) { throw "Ollama が起動しませんでした。" }
+function Stop-Maid {
+    # 先に maid が開いたウィンドウ（cmd）を閉じる。中身を先に止めると「何かキーを押してください」で残るため
+    Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*title maid-*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    # runtime\ の中のプログラムだけを止める
+    $procs = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($Rt, [StringComparison]::OrdinalIgnoreCase) })
+    foreach ($pr in $procs) { Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue }
+    return $procs.Count
+}
+
+function Start-OllamaServer {
+    if (Test-Port $OllamaPort) { return }
+    if (-not (Test-Path $P.Ollama)) { throw "Ollama がありません。先に setup.bat を実行してください。" }
+    Start-Window "ollama" $P.Ollama @("serve")
+    if (-not (Wait-Port $OllamaPort 60 "Ollama")) { throw "Ollama が起動しませんでした。" }
+}
+
+function Start-Brain {
+    # 前の版の maid が 11434 で Ollama を直接動かしていたら止める（中継を置くため）
+    if ((Test-Port 11434) -and -not (Test-Port $OllamaPort)) {
+        Get-Process -Name ollama* -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($Rt, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force
+        Start-Sleep -Seconds 2
+    }
+    Start-OllamaServer
+    if (-not (Test-Port 11434)) {
+        $a = @("run", "--no-project", "--python", $PyVer, "python", "`"$Root\bridge\llm_proxy.py`"", "--port", "11434", "--ollama", "http://127.0.0.1:$OllamaPort")
+        Start-Window "brain-proxy" $P.Uv $a
+        if (-not (Wait-Port 11434 120 "頭脳の中継")) { throw "頭脳の中継が起動しませんでした（maid-brain-proxy のウィンドウを確認してください）。" }
+    }
 }
 
 function Start-Aivis {
@@ -122,7 +149,7 @@ function Start-Aivis {
     if (-not $exe) { throw "AivisSpeech Engine がありません。先に maid.bat setup を実行してください。" }
     $a = @("--load_all_models")
     if ($AivisGpu) { $a += "--use_gpu" }
-    Start-Background "aivisspeech" $exe $a
+    Start-Window "aivisspeech" $exe $a
     # 初回はモデル（約 1GB）をダウンロードするので長めに待つ
     if (-not (Wait-Port 10101 900 "AivisSpeech Engine（初回は数分かかります）")) { throw "AivisSpeech Engine が起動しませんでした。" }
 }
@@ -190,7 +217,7 @@ function Invoke-Setup {
     Invoke-UvPython @("-c", "print('ブリッジ用 Python OK')")
 
     Say "[6/6] 頭脳のモデル ($Model)" Cyan
-    Start-Ollama
+    Start-OllamaServer
     # 大きいので途中で通信が切れることがある。ollama pull は続きから再開できるので数回やり直す
     for ($i = 1; $i -le 5; $i++) {
         & $P.Ollama pull $Model
@@ -243,9 +270,8 @@ function Invoke-Check {
     Row "  ライブラリ（.venv）" (Test-Path "$($P.Olv)\.venv") "" ".\setup.bat を実行（まだ setup していなければ正常です）"
     $models = @()
     if (Test-Path $P.Ollama) {
-        $wasRunning = Test-Port 11434
-        if ($wasRunning) {
-            try { $models = @((Invoke-RestMethod "http://127.0.0.1:11434/api/tags").models | ForEach-Object { $_.name }) } catch { $models = @() }
+        if (Test-Port $OllamaPort) {
+            try { $models = @((Invoke-RestMethod "http://127.0.0.1:$OllamaPort/api/tags").models | ForEach-Object { $_.name }) } catch { $models = @() }
         }
     }
     if ($models.Count -gt 0) {
@@ -255,7 +281,7 @@ function Invoke-Check {
     }
 
     Say "起動状態（start 後に確認）" Cyan
-    foreach ($s in @(@("Ollama", 11434), @("AivisSpeech Engine", 10101), @("ブリッジ", 10102), @("Discord ゲート", 12394), @("Open-LLM-VTuber", 12393))) {
+    foreach ($s in @(@("Ollama", $OllamaPort), @("頭脳の中継", 11434), @("AivisSpeech Engine", 10101), @("ブリッジ", 10102), @("Discord ゲート", 12394), @("Open-LLM-VTuber", 12393))) {
         $up = Test-Port $s[1]
         Write-Host ("  [{0}] {1,-28} 127.0.0.1:{2}" -f $(if ($up) { "ON " } else { "-- " }), $s[0], $s[1]) -ForegroundColor $(if ($up) { "Green" } else { "DarkGray" })
     }
@@ -263,40 +289,107 @@ function Invoke-Check {
 }
 
 # ------------------------------------------------------------------ start
+# 画面（Open-LLM-VTuber の Web 画面）の設定の初期値を、ページを開く前に入れておく。
+# - WebSocket URL: Discord ゲートが使えればゲート、だめなら本体に直結（毎回 maid が決める）
+# - マイク・VAD: 最初の 1 回だけ入れる（あとで画面から変えたものは上書きしない）
+function Write-FrontendDefaults([string]$WsUrl) {
+    $front = "$($P.Olv)\frontend"
+    $index = "$front\index.html"
+    if (-not (Test-Path $index)) { return }
+    $js = @"
+// maid が起動のたびに書き換えるファイル（scripts\maid.ps1）
+(function () {
+  try {
+    var ls = window.localStorage;
+    ls.setItem("wsUrl", JSON.stringify("$WsUrl"));
+    ls.setItem("baseUrl", JSON.stringify("http://127.0.0.1:12393"));
+    if (ls.getItem("maidDefaults") !== "1") {
+      ls.setItem("micOn", "true");
+      ls.setItem("autoStopMic", "false");            // 話している途中でも割り込めるように
+      ls.setItem("autoStartMicOn", "true");          // 割り込んだあともマイクを戻す
+      ls.setItem("autoStartMicOnConvEnd", "true");   // 返事が終わったらマイクを戻す（毎回クリック不要）
+      ls.setItem("vadSettings", JSON.stringify({ positiveSpeechThreshold: 50, negativeSpeechThreshold: 35, redemptionFrames: 14 }));
+      ls.setItem("maidDefaults", "1");
+    }
+  } catch (e) {}
+})();
+"@
+    [IO.File]::WriteAllText("$front\maid-defaults.js", $js, (New-Object Text.UTF8Encoding $false))
+    $html = [IO.File]::ReadAllText($index)
+    if ($html -notmatch "maid-defaults\.js") {
+        $html = $html -replace "<head>", "<head>`n    <script src=`"./maid-defaults.js`"></script>"
+        [IO.File]::WriteAllText($index, $html, (New-Object Text.UTF8Encoding $false))
+    }
+}
+
+# ゲート経由で本体につながり、最初のメッセージが返ってくるか確かめる
+function Test-Gate {
+    try {
+        $ws = New-Object System.Net.WebSockets.ClientWebSocket
+        $cts = New-Object System.Threading.CancellationTokenSource 10000
+        $ws.ConnectAsync([Uri]"ws://127.0.0.1:12394/client-ws", $cts.Token).Wait()
+        $buf = New-Object byte[] 65536
+        $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buf), $cts.Token).Result
+        try { $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "", [Threading.CancellationToken]::None).Wait(2000) | Out-Null } catch {}
+        return ($r.Count -gt 0)
+    } catch { return $false }
+}
+
 function Invoke-Start {
-    Say "Ollama" Cyan; Start-Ollama
+    if (-not (Test-Path "$($P.Olv)\run_server.py")) { throw "Open-LLM-VTuber がありません。先に setup.bat を実行してください。" }
+    Say "頭脳（Ollama + 中継）" Cyan; Start-Brain
     Say "AivisSpeech Engine" Cyan; Start-Aivis
 
     Say "ブリッジ (10102)" Cyan
     if (-not (Test-Port 10102)) {
         $a = @("run", "--no-project", "--python", $PyVer, "python", "`"$Root\bridge\aivis_openai_bridge.py`"", "--voice", "`"$Voice`"", "--speed", "$Speed")
-        Start-Background "bridge" $P.Uv $a
+        Start-Window "bridge" $P.Uv $a
     }
 
     if (-not $NoDiscordGate) {
         Say "Discord ゲート (12394)" Cyan
         if (-not (Test-Port 12394)) {
-            $a = @("run", "--no-project", "--python", $PyVer, "--with", "websockets>=13", "python", "`"$Root\gate\discord_gate.py`"")
-            Start-Background "discord-gate" $P.Uv $a
+            # websockets>=13 の > は cmd でリダイレクトにならないよう引用符で囲む
+            $a = @("run", "--no-project", "--python", $PyVer, "--with", "`"websockets>=13`"", "python", "`"$Root\gate\discord_gate.py`"")
+            Start-Window "discord-gate" $P.Uv $a
         }
     }
 
-    if (-not (Test-Path "$($P.Olv)\run_server.py")) { throw "Open-LLM-VTuber がありません。先に maid.bat setup を実行してください。" }
-    if (-not $NoBrowser) {
-        # 準備ができたら、Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）
-        $url = "http://127.0.0.1:12393"
-        Start-Job -ScriptBlock {
-            param($url)
-            for ($i = 0; $i -lt 600; $i++) {
-                try { $c = New-Object Net.Sockets.TcpClient; $c.Connect("127.0.0.1", 12393); $c.Close(); break } catch { Start-Sleep 1 }
-            }
-            Start-Process "msedge.exe" "--app=$url"
-        } -ArgumentList $url | Out-Null
+    $direct = "ws://127.0.0.1:12393/client-ws"
+    Write-FrontendDefaults $direct
+
+    Say "Open-LLM-VTuber (12393)" Cyan
+    if (-not (Test-Port 12393)) {
+        Start-Window "open-llm-vtuber" $P.Uv @("run", "--project", "`"$($P.Olv)`"", "--directory", "`"$($P.Olv)`"", "run_server.py")
     }
-    Say "裏の部品のログ: $Rt\logs\" DarkGray
-    Say "Open-LLM-VTuber を起動します（このウィンドウを閉じるか Ctrl+C で、全部まとめて止まります）" Cyan
-    Push-Location $P.Olv
-    try { & $P.Uv run run_server.py } finally { Pop-Location }
+    if (-not (Wait-Port 12393 1200 "Open-LLM-VTuber（初回は数分かかります）")) {
+        throw "Open-LLM-VTuber が起動しませんでした（maid-open-llm-vtuber のウィンドウを確認してください）。"
+    }
+
+    $wsUrl = $direct
+    if (-not $NoDiscordGate) {
+        if ((Wait-Port 12394 60) -and (Test-Gate)) {
+            $wsUrl = "ws://127.0.0.1:12394/client-ws"
+            Say "  Discord ゲート: 使用中（Discord で通話中は声に反応しません）" Green
+        } else {
+            Say "  Discord ゲート: うまく動かないので使わずに直結します（maid-discord-gate のウィンドウを確認してください）" Yellow
+        }
+    }
+    Write-FrontendDefaults $wsUrl
+
+    if (-not $NoBrowser) {
+        # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）
+        Start-Process "msedge.exe" "--app=http://127.0.0.1:12393"
+    }
+    Say "`n準備完了。画面を閉じても裏の部品は動き続けます。" Green
+    Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
+    try {
+        while (Test-Port 12393) { Start-Sleep -Seconds 2 }
+        Say "Open-LLM-VTuber が終了しました。" Yellow
+    } finally {
+        $n = Stop-Maid
+        Say "裏の部品を止めました ($n 個)" Gray
+    }
 }
 
 # ------------------------------------------------------------------ others
@@ -305,7 +398,7 @@ switch ($Command) {
     "check" { Invoke-Check }
     "start" { Invoke-Start }
     "bench" {
-        Start-Ollama
+        Start-Brain
         $models = if ($Arg) { $Arg -split "," } else { @($Model) }
         $a = @("$Root\scripts\bench_latency.py")
         foreach ($m in $models) { $a += @("--model", $m) }
@@ -319,10 +412,8 @@ switch ($Command) {
         Say "追加しました。ブリッジ起動中なら http://127.0.0.1:10102/v1/voices で名前を確認できます。" Green
     }
     "stop" {
-        # runtime\ の中のプログラムだけを止める（前回の残りなど）
-        $procs = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($Rt, [StringComparison]::OrdinalIgnoreCase) })
-        foreach ($pr in $procs) { Say "  停止: $($pr.ProcessName) ($($pr.Id))"; Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue }
-        Say "止めました ($($procs.Count) 個)" Green
+        $n = Stop-Maid
+        Say "止めました ($n 個)" Green
     }
     "discord-check" { Invoke-UvPython @("$Root\gate\discord_gate.py", "--check") @("websockets>=13") }
     default {

@@ -20,6 +20,7 @@ start.bat          rem 起動
 |---|---|
 | `config/open-llm-vtuber/conf.yaml` | Open-LLM-VTuber 用の設定（ローカル LLM・SenseVoice・AivisSpeech・低遅延向け） |
 | `bridge/aivis_openai_bridge.py` | AivisSpeech Engine を OpenAI 互換 TTS として見せる中継サーバー（標準ライブラリのみ） |
+| `bridge/llm_proxy.py` | Ollama の前に置く中継。「考えてから答える」モードを切って返事を速くする |
 | `gate/discord_gate.py` | Discord で通話中は声に反応しないようにする中継（画面と本体の間に挟む） |
 | `scripts/maid.ps1`（`maid.bat` / `setup.bat` / `start.bat`） | ダウンロード・確認・一括起動・速度計測・声の追加 |
 | `scripts/bench_latency.py` | LLM と TTS の応答速度を測る |

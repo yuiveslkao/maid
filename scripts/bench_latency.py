@@ -16,11 +16,11 @@ import urllib.request
 
 PROMPTS = ["ねえ、今日ちょっと疲れちゃった", "おすすめの夜ごはんある？", "明日って何曜日だっけ"]
 CLAUSE_END = "、。！？!?,."
-SYSTEM = "あなたは明るいアシスタントです。日本語の話し言葉で1〜2文で短く答えてください。/no_think"
+SYSTEM = "あなたは明るいアシスタントです。日本語の話し言葉で1〜2文で短く答えてください。"
 
 
-def llm_first_clause(base_url: str, model: str, prompt: str) -> tuple[float, float, str]:
-    """(最初のトークンまでの秒, 最初の読点/句点までの秒, 最初の文節)"""
+def llm_first_clause(base_url: str, model: str, prompt: str) -> tuple[float, float, str, float]:
+    """(最初のトークンまでの秒, 最初の読点/句点までの秒, 最初の文節, 考えていた秒)"""
     body = json.dumps({
         "model": model, "stream": True, "temperature": 0.8,
         "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
@@ -29,13 +29,20 @@ def llm_first_clause(base_url: str, model: str, prompt: str) -> tuple[float, flo
                                  headers={"Content-Type": "application/json"}, method="POST")
     start = time.perf_counter()
     ttft = None
+    think_start = think_end = None
     text = ""
     with urllib.request.urlopen(req, timeout=120) as res:
         for raw in res:
             line = raw.decode("utf-8").strip()
             if not line.startswith("data:") or line == "data: [DONE]":
                 continue
-            delta = json.loads(line[5:])["choices"][0]["delta"].get("content") or ""
+            d = json.loads(line[5:])["choices"][0]["delta"]
+            if d.get("reasoning") or d.get("reasoning_content"):  # 本文とは別に送られる「考え中」
+                now = time.perf_counter() - start
+                think_start = now if think_start is None else think_start
+                think_end = now
+                continue
+            delta = d.get("content") or ""
             if not delta:
                 continue
             if ttft is None:
@@ -45,8 +52,11 @@ def llm_first_clause(base_url: str, model: str, prompt: str) -> tuple[float, flo
                 continue  # 考え中の部分は読み上げられないので待つ
             visible = text.split("</think>")[-1].strip()
             if any(c in CLAUSE_END for c in visible):
-                return ttft, time.perf_counter() - start, visible
-    return ttft or 0.0, time.perf_counter() - start, text.split("</think>")[-1].strip()
+                break
+    thought = (think_end - think_start) if think_start is not None else 0.0
+    if "</think>" in text:
+        thought = max(thought, ttft or 0.0)
+    return ttft or 0.0, time.perf_counter() - start, text.split("</think>")[-1].strip(), thought
 
 
 def tts_time(bridge_url: str, text: str) -> float:
@@ -74,7 +84,7 @@ def main() -> None:
         llm_first_clause(a.ollama, model, "こんにちは")  # ウォームアップ（モデル読み込み）
         firsts, clauses, ttses = [], [], []
         for prompt in PROMPTS:
-            ttft, clause_t, clause = llm_first_clause(a.ollama, model, prompt)
+            ttft, clause_t, clause, thought = llm_first_clause(a.ollama, model, prompt)
             try:
                 tts_t = tts_time(a.bridge, clause or "うん")
             except OSError as e:
@@ -83,7 +93,8 @@ def main() -> None:
             firsts.append(ttft)
             clauses.append(clause_t)
             ttses.append(tts_t)
-            print(f"  「{prompt}」→「{clause}」  初トークン {ttft*1000:4.0f}ms / 最初の文節 {clause_t*1000:4.0f}ms / TTS {tts_t*1000:4.0f}ms")
+            note = f" / うち考え中 {thought*1000:4.0f}ms（考えるモードが ON になっています）" if thought > 0.05 else ""
+            print(f"  「{prompt}」→「{clause}」  最初の文節 {clause_t*1000:4.0f}ms / TTS {tts_t*1000:4.0f}ms{note}")
         llm, tts = statistics.median(clauses), statistics.median(ttses)
         total = a.vad + a.asr + llm + tts
         print(f"  中央値: LLM 最初の文節 {llm*1000:.0f}ms + TTS {tts*1000:.0f}ms")

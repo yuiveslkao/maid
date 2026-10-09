@@ -47,7 +47,7 @@ character_config:
   # If you want to create multiple characters and switch between them,
   #   add characters in characters folder
   # [maid] 性格・口調はここを書き換える。応答速度のため「短く話す」指示は残すのがおすすめ。
-  #   末尾の /no_think は Qwen3 系の「考える」モードを切るスイッチ（遅延対策）。他のモデルなら消してよい。
+  #   「考えてから答える」モードは maid の頭脳の中継 (bridge/llm_proxy.py) が切るので、ここに書く必要はない。
   persona_prompt: |
     あなたは「メイド」という名前の、ご主人様専属のアシスタントです。
     （ここに性格・口調・一人称・関係性などを書いてください）
@@ -58,7 +58,6 @@ character_config:
     - 箇条書き・記号・絵文字・URL は使わない（読み上げられるため）。
     - わからないことは正直にわからないと言う。
     - あなたはインターネットを見られない。天気・ニュース・今日の日付・イベントの日程など、最新の情報は推測で答えず「今は調べられない」と言う。
-    /no_think
 
   #  =================== LLM Backend Settings ===================
 
@@ -144,10 +143,10 @@ character_config:
         verbose: False
 
       ollama_llm:
-        base_url: 'http://localhost:11434/v1'
+        base_url: 'http://localhost:11434/v1' # [maid] 11434 は maid の「頭脳の中継」（本物の Ollama は 11436）
         # [maid] `ollama list` に出る名前を書く。8GB VRAM なら 7〜9B の Q4 量子化が上限の目安
         model: 'qwen3:8b'
-        temperature: 0.8 # value between 0 to 2
+        temperature: 0.7 # [maid] Qwen3 の推奨値（考えるモードなし）
         # seconds to keep the model in memory after inactivity. 
         # set to -1 to keep the model in memory forever (even after exiting open llm vtuber)
         keep_alive: -1
