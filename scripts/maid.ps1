@@ -220,14 +220,14 @@ function Invoke-Check {
     Row "空き容量 ($($drive.Name):)" ($freeGb -ge 20) "$freeGb GB" "合計 15〜20GB 程度使います"
 
     Say "maid\runtime\ の中" Cyan
-    Row "uv" (Test-Path $P.Uv) $P.Uv "maid.bat setup"
-    Row "Ollama" (Test-Path $P.Ollama) $P.Ollama "maid.bat setup"
+    Row "uv" (Test-Path $P.Uv) $P.Uv ".\setup.bat を実行（まだ setup していなければ正常です）"
+    Row "Ollama" (Test-Path $P.Ollama) $P.Ollama ".\setup.bat を実行（まだ setup していなければ正常です）"
     $aivis = Find-AivisExe
-    Row "AivisSpeech Engine" ([bool]$aivis) $(if ($aivis) { $aivis } else { "なし" }) "maid.bat setup"
-    Row "Open-LLM-VTuber" (Test-Path "$($P.Olv)\run_server.py") $P.Olv "maid.bat setup"
-    Row "  画面（frontend）" (Test-Path "$($P.Olv)\frontend\index.html") "" "maid.bat setup"
-    Row "  conf.yaml" (Test-Path "$($P.Olv)\conf.yaml") "" "maid.bat setup"
-    Row "  ライブラリ（.venv）" (Test-Path "$($P.Olv)\.venv") "" "maid.bat setup"
+    Row "AivisSpeech Engine" ([bool]$aivis) $(if ($aivis) { $aivis } else { "なし" }) ".\setup.bat を実行（まだ setup していなければ正常です）"
+    Row "Open-LLM-VTuber" (Test-Path "$($P.Olv)\run_server.py") $P.Olv ".\setup.bat を実行（まだ setup していなければ正常です）"
+    Row "  画面（frontend）" (Test-Path "$($P.Olv)\frontend\index.html") "" ".\setup.bat を実行（まだ setup していなければ正常です）"
+    Row "  conf.yaml" (Test-Path "$($P.Olv)\conf.yaml") "" ".\setup.bat を実行（まだ setup していなければ正常です）"
+    Row "  ライブラリ（.venv）" (Test-Path "$($P.Olv)\.venv") "" ".\setup.bat を実行（まだ setup していなければ正常です）"
     $models = @()
     if (Test-Path $P.Ollama) {
         $wasRunning = Test-Port 11434
@@ -236,7 +236,7 @@ function Invoke-Check {
         }
     }
     if ($models.Count -gt 0) {
-        Row "頭脳のモデル" ($models -contains $Model) ($models -join ", ") "maid.bat setup -Model $Model"
+        Row "頭脳のモデル" ($models -contains $Model) ($models -join ", ") ".\maid.bat setup -Model $Model"
     } else {
         Say "  [-- ] 頭脳のモデル                 （Ollama 停止中のため未確認。start 後にもう一度 check）"
     }
@@ -246,7 +246,7 @@ function Invoke-Check {
         $up = Test-Port $s[1]
         Write-Host ("  [{0}] {1,-28} 127.0.0.1:{2}" -f $(if ($up) { "ON " } else { "-- " }), $s[0], $s[1]) -ForegroundColor $(if ($up) { "Green" } else { "DarkGray" })
     }
-    if ($script:ok) { Say "`n準備 OK" Green } else { Say "`nNG の項目を直してください" Yellow }
+    if ($script:ok) { Say "`n準備 OK。.\start.bat で起動できます" Green } else { Say "`nNG の項目を直してください" Yellow }
 }
 
 # ------------------------------------------------------------------ start

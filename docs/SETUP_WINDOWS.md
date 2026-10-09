@@ -32,6 +32,8 @@
 
 あとで出てくる `maid.bat check` が全部まとめて確認してくれるので、ここは読むだけで大丈夫です。
 
+> **PowerShell で実行するときは先頭に `.\` を付けます**（例: `.\maid.bat check`）。PowerShell は今いるフォルダのコマンドをそのままでは実行しないためです。エクスプローラーからダブルクリックするなら不要です。
+
 ## 2. maid を置く
 
 GitHub のこのリポジトリのページで、ブランチ `claude/stoic-davinci-cg39zh` を選んで **Code → Download ZIP**。
