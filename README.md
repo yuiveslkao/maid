@@ -6,6 +6,14 @@ PC 上でいつでも音声で話せる、好みの声と性格のキャラク�
 - 仕様と今後の計画: [docs/SPEC.md](docs/SPEC.md)
 - まず動かす（Phase 1・完全ローカル）: [docs/SETUP_WINDOWS.md](docs/SETUP_WINDOWS.md)
 
+PC を汚さない構成です。インストーラーや PATH の変更は使わず、必要なものは全部 `runtime\` に入ります。
+
+```bat
+setup.bat          rem 必要なものを runtime\ にダウンロード
+maid.bat check     rem そろっているか確認
+start.bat          rem 起動
+```
+
 ## 中身
 
 | パス | 内容 |
@@ -13,6 +21,6 @@ PC 上でいつでも音声で話せる、好みの声と性格のキャラク�
 | `config/open-llm-vtuber/conf.yaml` | Open-LLM-VTuber 用の設定（ローカル LLM・SenseVoice・AivisSpeech・低遅延向け） |
 | `bridge/aivis_openai_bridge.py` | AivisSpeech Engine を OpenAI 互換 TTS として見せる中継サーバー（標準ライブラリのみ） |
 | `gate/discord_gate.py` | Discord で通話中は声に反応しないようにする中継（画面と本体の間に挟む） |
-| `scripts/start.ps1` / `start.bat` | AivisSpeech → ブリッジ → Discord ゲート → Open-LLM-VTuber を一括起動 |
+| `scripts/maid.ps1`（`maid.bat` / `setup.bat` / `start.bat`） | ダウンロード・確認・一括起動・速度計測・声の追加 |
 | `scripts/bench_latency.py` | LLM と TTS の応答速度を測る |
-| `tests/` | テスト（`uv run --no-project --with "websockets>=13" --with openai python -m unittest discover -s tests`） |
+| `tests/` | テスト（`runtime\uv\uv.exe run --no-project --with "websockets>=13" --with openai python -m unittest discover -s tests`） |

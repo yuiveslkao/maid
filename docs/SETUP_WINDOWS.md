@@ -14,83 +14,91 @@
 
 ---
 
-## 0. 事前に入れるもの
+## 0. 方針: PC を汚さない
 
-PowerShell で:
+- **インストーラー・winget・PATH の変更は使いません。** 必要なものは全部 `maid\runtime\` に入ります。
+- Python や Git を PC に入れる必要もありません（Python は `runtime\` の中に専用のものが入ります）。
+- やめたくなったら **maid フォルダを消せば終わり**です（例外は「9. 片付け方」）。
 
-```powershell
-winget install --id Git.Git
-winget install --id Gyan.FFmpeg
-winget install --id astral-sh.uv
-winget install --id Python.Python.3.12   # ブリッジ用（無くても uv で動きます）
+## 1. PC に元から必要なもの（確認だけ）
+
+| もの | 確認方法 | 普通は |
+|---|---|---|
+| Windows 10 (1803) 以降 / 11 | — | 入っている |
+| PowerShell 5.1 以降、curl.exe、tar.exe | Windows に標準で入っている | 入っている |
+| NVIDIA ドライバー | PowerShell で `nvidia-smi` → GPU 名が出れば OK | ゲームをしていれば入っている |
+| Visual C++ ランタイム | `C:\Windows\System32\msvcp140.dll` があれば OK | Discord やゲームと一緒に入っている |
+| 空き容量 | 20GB 程度 | — |
+
+あとで出てくる `maid.bat check` が全部まとめて確認してくれるので、ここは読むだけで大丈夫です。
+
+## 2. maid を置く
+
+GitHub のこのリポジトリのページで、ブランチ `claude/stoic-davinci-cg39zh` を選んで **Code → Download ZIP**。
+好きな場所（例: `D:\maid`）に展開します。**パスに日本語や空白が無い場所**だと安心です。
+
+## 3. 必要なものをダウンロードする
+
+`setup.bat` をダブルクリック（または `maid.bat setup`）。次のものを `runtime\` に入れます。
+
+| もの | 用途 | 大きさの目安 |
+|---|---|---|
+| uv | Python とライブラリの管理（Python 本体も `runtime\` に入れる） | 数十 MB |
+| Ollama（zip 版） | 頭脳を動かす | 約 2GB |
+| AivisSpeech Engine（エンジンだけ） | 声 | 約 1〜2GB |
+| 7zr.exe | AivisSpeech の展開用（7-Zip 公式の単体版） | 1MB 未満 |
+| Open-LLM-VTuber v1.2.1 ＋ 画面 | 基盤 | 数 GB（ライブラリ込み） |
+| 頭脳のモデル（qwen3:8b） | — | 約 5GB |
+
+- 何度実行しても大丈夫です（そろっているものは飛ばします）。途中で失敗したらもう一度実行してください。
+- 別のモデルにしたいときは `maid.bat setup -Model qwen3:4b` のように指定します。
+  - 8GB VRAM（RTX 3060 Ti）で快適に動くのは **7〜9B クラスの Q4 量子化** までです。
+  - 2026 年時点で新しい世代の日本語に強いモデルが出ていれば、同じサイズ帯でそちらを使って構いません。
+    **ツール呼び出し（function calling）対応**のモデルを選ぶと Phase 2（検索）にそのまま使えます。
+  - 「考えてから答える」タイプ（thinking）のモデルは遅くなるので、非 thinking モードで使います
+    （Qwen3 は `conf.yaml` の persona 末尾の `/no_think` で切っています）。
+- ffmpeg は不要です（声は wav でやりとりするため）。
+
+終わったら確認:
+
+```bat
+maid.bat check
 ```
 
-入れたら PowerShell を開き直してください。
+`NG` が出たら、その下に出る対処を見てください。
 
-## 1. Ollama（頭脳）
+## 4. キャラの設定
 
-1. <https://ollama.com/download> から Windows 版を入れる（入れると常駐します）。
-2. モデルを取得:
+`runtime\Open-LLM-VTuber\conf.yaml` の `character_name` / `persona_prompt` を書き換えます。
+（元の雛形は `config\open-llm-vtuber\conf.yaml`。setup は既にある conf.yaml を上書きしません）
 
-   ```powershell
-   ollama pull qwen3:8b
-   ```
+## 5. 起動
 
-   - 8GB VRAM（RTX 3060 Ti）で快適に動くのは **7〜9B クラスの Q4 量子化** までです。
-   - もっと速さが欲しければ 4B クラスも試して、`scripts/bench_latency.py` で比べてください（後述）。
-   - 2026 年時点で新しい世代の日本語に強いモデルが出ていれば、同じサイズ帯でそちらを使って構いません。
-     **ツール呼び出し（function calling）対応**のモデルを選ぶと Phase 2（検索）にそのまま使えます。
-   - 「考えてから答える」タイプ（thinking）のモデルは遅くなるので、非 thinking モードで使います
-     （Qwen3 は `conf.yaml` の persona 末尾の `/no_think` で切っています）。
+`start.bat` をダブルクリック。Ollama → AivisSpeech Engine → ブリッジ → Discord ゲート → Open-LLM-VTuber の順に起動し、
+準備ができたら **Edge がアプリ風のウィンドウで画面を開きます**（Edge は Windows 標準なので追加インストール不要）。
 
-## 2. AivisSpeech（声）
+- **初回の起動は時間がかかります**: AivisSpeech の初期モデル（約 1GB）と音声認識モデル（約 230MB）をダウンロードするため。
+- 初回はマイクの使用許可を聞かれるので「許可」してください。
 
-1. <https://aivis-project.com/> から **AivisSpeech** 本体を入れる。
-2. 一度 AivisSpeech を起動して、初回ダウンロード（約 1GB）が終わるのを待つ。
-3. 好みの声のモデルを入れる: AivisSpeech の「設定」→「音声合成モデルの管理」から [AivisHub](https://hub.aivis-project.com/) のモデルを追加できます。
-   - モデルごとにライセンスがあります。個人利用ならほぼ問題ありませんが、念のため確認してください。
-4. AivisSpeech 本体は閉じて OK（`start.bat` がエンジンだけを裏で起動します）。
-
-> GPU で動かす（`-AivisGpu`）と合成は速くなりますが、VRAM を 1〜2GB 使い、LLM と取り合いになります。
-> まずは CPU で試し、`bench_latency.py` の TTS の数字を見て決めてください。
-
-## 3. Open-LLM-VTuber（基盤）
-
-```powershell
-cd $HOME
-git clone --branch v1.2.1 --recursive https://github.com/Open-LLM-VTuber/Open-LLM-VTuber.git
-cd Open-LLM-VTuber
-uv sync
+```bat
+rem 例: 声と話速を指定して起動 / AivisSpeech を GPU で動かす / 画面を自動で開かない
+maid.bat start -Voice "まい/ノーマル" -Speed 1.1
+maid.bat start -AivisGpu
+maid.bat start -NoBrowser
 ```
 
-このリポジトリの設定ファイルをコピーします（`<maid>` はこのリポジトリを置いた場所）:
+> AivisSpeech を GPU で動かす（`-AivisGpu`）と合成は速くなりますが、VRAM を 1〜2GB 使い、LLM と取り合いになります。
+> まずは CPU で試し、速さを測ってから決めてください。
 
-```powershell
-Copy-Item <maid>\config\open-llm-vtuber\conf.yaml .\conf.yaml
-```
+### 声を選ぶ・増やす
 
-- 音声認識モデル（SenseVoice, 約 230MB）は初回起動時に自動でダウンロードされます。
-- キャラ名・性格は `conf.yaml` の `character_name` / `persona_prompt` を書き換えてください。
+- 使える声の一覧: 起動中に <http://127.0.0.1:10102/v1/voices>
+- 声を増やす: [AivisHub](https://hub.aivis-project.com/) で好きなモデルのページを開き、その URL で
+  `maid.bat add-voice https://hub.aivis-project.com/aivm-models/...`
+  - モデルごとにライセンスがあります。個人利用ならほぼ問題ありませんが、念のため確認してください。
+- いつも使う声は `start.bat` を編集して `-Voice` を付けるか、`conf.yaml` の `openai_tts.voice` に書きます。
 
-## 4. 起動
-
-`<maid>\start.bat` をダブルクリック（または PowerShell で `scripts\start.ps1`）。
-
-```powershell
-# 例: Open-LLM-VTuber を別の場所に置いた / 声を指定する
-.\scripts\start.ps1 -OlvDir D:\Open-LLM-VTuber -Voice "まい/ノーマル" -Speed 1.1
-```
-
-声の名前（またはスタイル ID）は、起動中に <http://127.0.0.1:10102/v1/voices> を開くと一覧が出ます。
-ここで決めた声を常に使いたい場合は、`conf.yaml` の `openai_tts.voice` に書いても OK です。
-
-## 5. 画面（GUI）
-
-どちらかで開きます:
-
-- **ブラウザ**: <http://localhost:12393>
-- **デスクトップアプリ（おすすめ）**: [Open-LLM-VTuber-Web のリリース](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber-Web/releases) から Windows 版を入れる。
-  ウィンドウモードと、デスクトップに常駐する「ペットモード」があります。
+## 6. 画面の設定
 
 **最初に一度だけ**、画面の設定（General）で **WebSocket URL** を
 `ws://127.0.0.1:12394/client-ws` に変えてください（Base URL は `http://127.0.0.1:12393` のまま）。
@@ -110,9 +118,9 @@ Copy-Item <maid>\config\open-llm-vtuber\conf.yaml .\conf.yaml
 Live2D のモデル（初期は Mao）は表示されますが、Phase 1 では気にせず進めてください。
 
 > 雑音対策をもっとしたい場合: RTX 3060 Ti は **NVIDIA Broadcast** のノイズ除去が使えます（マイクを「NVIDIA Broadcast」の仮想マイクに切り替える）。
-> GPU を少し使うので、遅延が増えないか確認してください。
+> ただし別途インストールが必要で、GPU も少し使います。まずは VAD のしきい値調整で足りるか試してください。
 
-## 6. Discord 通話中に止まるか確かめる
+## 7. Discord 通話中に止まるか確かめる
 
 1. Discord でボイスチャンネルに入る。
 2. 画面に「Discord 通話中なので、声には反応しません」と出て、話しかけても返事をしなければ OK。
@@ -120,28 +128,37 @@ Live2D のモデル（初期は Mao）は表示されますが、Phase 1 では�
 
 判定だけ確かめたいときは:
 
-```powershell
-uv run --no-project --with "websockets>=13" python gate\discord_gate.py --check
+```bat
+maid.bat discord-check
 ```
 
 - 判定には、Windows がアプリごとのマイク使用状況を記録している情報（タスクバーのマイクアイコンと同じ）を使います。
   Windows の「設定 → プライバシーとセキュリティ → マイク」で「デスクトップアプリがマイクにアクセスできるようにする」が ON である必要があります（Discord で話せていれば ON です）。
 - Discord の設定画面でマイクテストをしている間も「通話中」と判定されます。
-- 通話中もキャラから話しかけてほしい場合は、`discord_gate.py` に `--allow-proactive` を付けて起動します。
 
-## 7. 速さを測る
+## 8. 速さを測る
 
-Ollama とブリッジが起動している状態で:
+start.bat で起動している状態で、別のウィンドウから:
 
-```powershell
-python scripts\bench_latency.py --model qwen3:8b
-python scripts\bench_latency.py --model qwen3:8b --model qwen3:4b   # 比較
+```bat
+maid.bat bench
+maid.bat bench qwen3:8b,qwen3:4b
 ```
+
+（比べるモデルは先に `maid.bat setup -Model qwen3:4b` で取得しておく）
 
 「LLM が最初の読点/句点まで出すのにかかった時間」と「その部分を AivisSpeech で合成する時間」が出ます。
 話し終わってから声が出るまで ≒ **VAD の待ち + 音声認識 + この 2 つ** です。
 
-## 8. 外に出ていないか確認する
+## 9. 片付け方
+
+1. maid フォルダを消す（`runtime\` ごと消えます）。
+2. maid フォルダの外に作られるもの（消したければ手で消す）:
+   - `%APPDATA%\AivisSpeech-Engine` … AivisSpeech の声モデルと辞書（約 1GB）。保存先を変える設定がエンジンに無いため。
+   - `%USERPROFILE%\.ollama` … Ollama の識別用の鍵ファイルなど（数 KB）。モデル本体は `runtime\` にあります。
+   - Edge に残る「127.0.0.1 のマイク許可」と画面の設定。
+
+## 10. 外に出ていないか確認する
 
 - `conf.yaml` で `use_mcpp: False`（検索ツールなし）になっている。
 - 起動ログに出る URL がすべて `localhost` / `127.0.0.1` になっている。
@@ -153,7 +170,7 @@ python scripts\bench_latency.py --model qwen3:8b --model qwen3:4b   # 比較
 |---|---|
 | 声が出ない | <http://127.0.0.1:10102/health> を開く。502 なら AivisSpeech Engine が起動していない |
 | `voice '...' が見つかりません` | `/v1/voices` の名前と完全一致しているか（「話者名/スタイル名」） |
-| 返事が遅い・最初だけ遅い | 初回はモデル読み込みで遅い（2 回目以降で判断）。`ollama ps` で GPU 100% になっているか |
+| 返事が遅い・最初だけ遅い | 初回はモデル読み込みで遅い（2 回目以降で判断）。`runtime\ollama\ollama.exe ps` で GPU 100% になっているか |
 | 返事に `<think>` が混じる / 遅い | thinking モードが ON。persona に `/no_think` があるか、非 thinking モデルに替える |
 | 物音で反応する | VAD のしきい値を上げる / NVIDIA Broadcast |
 | 画面が「接続できません」 | WebSocket URL が 12394 のとき、ゲートが起動しているか。ゲートなしで使うなら 12393 に戻す |
