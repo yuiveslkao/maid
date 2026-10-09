@@ -9,6 +9,7 @@
 #   maid.bat bench            応答速度を測る
 #   maid.bat add-voice <URL>  AivisHub の声モデルを追加する
 #   maid.bat discord-check    Discord が通話中と判定されるか確認する
+#   maid.bat stop             裏に残っている maid の部品を全部止める
 
 param(
     [Parameter(Position = 0)][string]$Command = "help",
@@ -52,6 +53,7 @@ $env:MODELSCOPE_CACHE = "$Rt\cache\modelscope"
 $env:TORCH_HOME = "$Rt\cache\torch"
 $env:OLLAMA_MODELS = $P.OllamaModel
 $env:OLLAMA_HOST = "127.0.0.1:11434"
+$env:PYTHONUNBUFFERED = "1"   # ログがすぐファイルに出るように
 $env:PATH = "$Rt\uv;$Rt\uv-tools\bin;$Rt\ollama;$env:PATH"
 
 function Say([string]$msg, [string]$color = "Gray") { Write-Host $msg -ForegroundColor $color }
@@ -98,10 +100,19 @@ function Find-AivisExe {
     return $null
 }
 
+# 裏で動く部品はウィンドウを出さず、ログを runtime\logs\ に書く。
+# このウィンドウにぶら下がるので、このウィンドウを閉じる / Ctrl+C で一緒に止まる。
+function Start-Background([string]$Name, [string]$Exe, [string[]]$ArgList) {
+    $logs = "$Rt\logs"
+    New-Item -ItemType Directory -Force -Path $logs | Out-Null
+    Start-Process -FilePath $Exe -ArgumentList $ArgList -NoNewWindow `
+        -RedirectStandardOutput "$logs\$Name.log" -RedirectStandardError "$logs\$Name.err.log" | Out-Null
+}
+
 function Start-Ollama {
     if (Test-Port 11434) { return }
     if (-not (Test-Path $P.Ollama)) { throw "Ollama がありません。先に maid.bat setup を実行してください。" }
-    Start-Process -FilePath $P.Ollama -ArgumentList "serve" -WindowStyle Minimized
+    Start-Background "ollama" $P.Ollama @("serve")
     if (-not (Wait-Port 11434 60 "Ollama")) { throw "Ollama が起動しませんでした。" }
 }
 
@@ -111,7 +122,7 @@ function Start-Aivis {
     if (-not $exe) { throw "AivisSpeech Engine がありません。先に maid.bat setup を実行してください。" }
     $a = @("--load_all_models")
     if ($AivisGpu) { $a += "--use_gpu" }
-    Start-Process -FilePath $exe -ArgumentList $a -WindowStyle Minimized
+    Start-Background "aivisspeech" $exe $a
     # 初回はモデル（約 1GB）をダウンロードするので長めに待つ
     if (-not (Wait-Port 10101 900 "AivisSpeech Engine（初回は数分かかります）")) { throw "AivisSpeech Engine が起動しませんでした。" }
 }
@@ -259,14 +270,14 @@ function Invoke-Start {
     Say "ブリッジ (10102)" Cyan
     if (-not (Test-Port 10102)) {
         $a = @("run", "--no-project", "--python", $PyVer, "python", "`"$Root\bridge\aivis_openai_bridge.py`"", "--voice", "`"$Voice`"", "--speed", "$Speed")
-        Start-Process -FilePath $P.Uv -ArgumentList $a -WindowStyle Minimized
+        Start-Background "bridge" $P.Uv $a
     }
 
     if (-not $NoDiscordGate) {
         Say "Discord ゲート (12394)" Cyan
         if (-not (Test-Port 12394)) {
             $a = @("run", "--no-project", "--python", $PyVer, "--with", "websockets>=13", "python", "`"$Root\gate\discord_gate.py`"")
-            Start-Process -FilePath $P.Uv -ArgumentList $a -WindowStyle Minimized
+            Start-Background "discord-gate" $P.Uv $a
         }
     }
 
@@ -282,7 +293,8 @@ function Invoke-Start {
             Start-Process "msedge.exe" "--app=$url"
         } -ArgumentList $url | Out-Null
     }
-    Say "Open-LLM-VTuber を起動します（止めるときはこのウィンドウで Ctrl+C）" Cyan
+    Say "裏の部品のログ: $Rt\logs\" DarkGray
+    Say "Open-LLM-VTuber を起動します（このウィンドウを閉じるか Ctrl+C で、全部まとめて止まります）" Cyan
     Push-Location $P.Olv
     try { & $P.Uv run run_server.py } finally { Pop-Location }
 }
@@ -306,8 +318,14 @@ switch ($Command) {
         if ($LASTEXITCODE -ne 0) { throw "追加に失敗しました。URL を確認してください。" }
         Say "追加しました。ブリッジ起動中なら http://127.0.0.1:10102/v1/voices で名前を確認できます。" Green
     }
+    "stop" {
+        # runtime\ の中のプログラムだけを止める（前回の残りなど）
+        $procs = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($Rt, [StringComparison]::OrdinalIgnoreCase) })
+        foreach ($pr in $procs) { Say "  停止: $($pr.ProcessName) ($($pr.Id))"; Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue }
+        Say "止めました ($($procs.Count) 個)" Green
+    }
     "discord-check" { Invoke-UvPython @("$Root\gate\discord_gate.py", "--check") @("websockets>=13") }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 13 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }

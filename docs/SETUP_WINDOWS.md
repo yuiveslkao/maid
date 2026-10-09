@@ -79,6 +79,8 @@ maid.bat check
 `start.bat` をダブルクリック。Ollama → AivisSpeech Engine → ブリッジ → Discord ゲート → Open-LLM-VTuber の順に起動し、
 準備ができたら **Edge がアプリ風のウィンドウで画面を開きます**（Edge は Windows 標準なので追加インストール不要）。
 
+- 裏で動く部品（Ollama・AivisSpeech・ブリッジ・Discord ゲート）はウィンドウを出さず、ログを `runtime\logs\` に書きます。
+  **start.bat のウィンドウを閉じるか Ctrl+C で全部まとめて止まります。** 何か残ってしまったときは `maid.bat stop`。
 - **初回の起動は時間がかかります**: AivisSpeech の初期モデル（約 1GB）と音声認識モデル（約 230MB）をダウンロードするため。
 - 初回はマイクの使用許可を聞かれるので「許可」してください。
 
