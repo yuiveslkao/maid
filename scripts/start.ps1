@@ -1,5 +1,5 @@
 ﻿# maid 一括起動スクリプト（Windows / PowerShell）
-#   AivisSpeech Engine → ブリッジ → Open-LLM-VTuber の順に起動する。Ollama は常駐アプリとして起動済みの前提。
+#   AivisSpeech Engine → ブリッジ → Discord ゲート → Open-LLM-VTuber の順に起動する。Ollama は常駐アプリとして起動済みの前提。
 #
 #   使い方:  powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 #   オプション例:  -OlvDir D:\Open-LLM-VTuber -Voice "まい/ノーマル" -Speed 1.1 -AivisGpu
@@ -9,7 +9,8 @@ param(
     [string]$AivisExe = "",                      # 空なら標準のインストール先を探す
     [string]$Voice = "default",                  # AivisSpeech のスタイル ID か「話者名/スタイル名」
     [double]$Speed = 1.0,
-    [switch]$AivisGpu                            # AivisSpeech を GPU (DirectML) で動かす。VRAM を食うので LLM と相談
+    [switch]$AivisGpu,                           # AivisSpeech を GPU (DirectML) で動かす。VRAM を食うので LLM と相談
+    [switch]$NoDiscordGate                       # Discord 通話中に音声を止めるゲートを使わない
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,7 +59,18 @@ if (Test-Port 10102) {
     Write-Host "ブリッジを起動: http://127.0.0.1:10102/v1"
 }
 
-# 4. Open-LLM-VTuber（このウィンドウで動かす。止めるときは Ctrl+C）
+# 4. Discord ゲート（画面の WebSocket URL を ws://127.0.0.1:12394/client-ws にしておく）
+if (-not $NoDiscordGate) {
+    if (Test-Port 12394) {
+        Write-Host "Discord ゲートは起動済み (12394)"
+    } else {
+        $gateArgs = @("run", "--no-project", "--with", "websockets>=13", "python", "`"$Root\gate\discord_gate.py`"")
+        Start-Process -FilePath "uv" -ArgumentList $gateArgs -WindowStyle Minimized
+        Write-Host "Discord ゲートを起動: ws://127.0.0.1:12394/client-ws"
+    }
+}
+
+# 5. Open-LLM-VTuber（このウィンドウで動かす。止めるときは Ctrl+C）
 if (-not (Test-Path "$OlvDir\run_server.py")) { throw "Open-LLM-VTuber が $OlvDir に見つかりません。-OlvDir で指定してください。" }
 Write-Host "Open-LLM-VTuber を起動します。準備ができたらデスクトップアプリか http://localhost:12393 を開いてください。"
 Push-Location $OlvDir

@@ -3,7 +3,7 @@
 ゴール: **ネットに何も出さずに、マイクで話しかけるとキャラが AivisSpeech の声で返事をする**状態にする。
 
 ```
-マイク ──▶ [Open-LLM-VTuber]  VAD（話し始め/終わり検出）→ SenseVoice（文字起こし, CPU）
+マイク ──▶ 画面 ──▶ Discord ゲート (12394) ──▶ [Open-LLM-VTuber (12393)]  VAD（話し始め/終わり検出）→ SenseVoice（文字起こし, CPU）
                 │
                 ├─▶ Ollama（頭脳, GPU） ── 文ごとにストリーミング
                 │
@@ -92,7 +92,11 @@ Copy-Item <maid>\config\open-llm-vtuber\conf.yaml .\conf.yaml
 - **デスクトップアプリ（おすすめ）**: [Open-LLM-VTuber-Web のリリース](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber-Web/releases) から Windows 版を入れる。
   ウィンドウモードと、デスクトップに常駐する「ペットモード」があります。
 
-画面の設定で次を確認してください:
+**最初に一度だけ**、画面の設定（General）で **WebSocket URL** を
+`ws://127.0.0.1:12394/client-ws` に変えてください（Base URL は `http://127.0.0.1:12393` のまま）。
+これで Discord ゲートを通るようになり、**Discord で通話中は声に反応しなくなります**（チャット入力は使えます）。
+
+画面の設定で次も確認してください:
 
 | 設定（英語表記） | おすすめ | 理由 |
 |---|---|---|
@@ -108,7 +112,24 @@ Live2D のモデル（初期は Mao）は表示されますが、Phase 1 では�
 > 雑音対策をもっとしたい場合: RTX 3060 Ti は **NVIDIA Broadcast** のノイズ除去が使えます（マイクを「NVIDIA Broadcast」の仮想マイクに切り替える）。
 > GPU を少し使うので、遅延が増えないか確認してください。
 
-## 6. 速さを測る
+## 6. Discord 通話中に止まるか確かめる
+
+1. Discord でボイスチャンネルに入る。
+2. 画面に「Discord 通話中なので、声には反応しません」と出て、話しかけても返事をしなければ OK。
+3. 通話を抜けると「また聞いています」と出て、元に戻る。
+
+判定だけ確かめたいときは:
+
+```powershell
+uv run --no-project --with "websockets>=13" python gate\discord_gate.py --check
+```
+
+- 判定には、Windows がアプリごとのマイク使用状況を記録している情報（タスクバーのマイクアイコンと同じ）を使います。
+  Windows の「設定 → プライバシーとセキュリティ → マイク」で「デスクトップアプリがマイクにアクセスできるようにする」が ON である必要があります（Discord で話せていれば ON です）。
+- Discord の設定画面でマイクテストをしている間も「通話中」と判定されます。
+- 通話中もキャラから話しかけてほしい場合は、`discord_gate.py` に `--allow-proactive` を付けて起動します。
+
+## 7. 速さを測る
 
 Ollama とブリッジが起動している状態で:
 
@@ -120,7 +141,7 @@ python scripts\bench_latency.py --model qwen3:8b --model qwen3:4b   # 比較
 「LLM が最初の読点/句点まで出すのにかかった時間」と「その部分を AivisSpeech で合成する時間」が出ます。
 話し終わってから声が出るまで ≒ **VAD の待ち + 音声認識 + この 2 つ** です。
 
-## 7. 外に出ていないか確認する
+## 8. 外に出ていないか確認する
 
 - `conf.yaml` で `use_mcpp: False`（検索ツールなし）になっている。
 - 起動ログに出る URL がすべて `localhost` / `127.0.0.1` になっている。
@@ -135,3 +156,5 @@ python scripts\bench_latency.py --model qwen3:8b --model qwen3:4b   # 比較
 | 返事が遅い・最初だけ遅い | 初回はモデル読み込みで遅い（2 回目以降で判断）。`ollama ps` で GPU 100% になっているか |
 | 返事に `<think>` が混じる / 遅い | thinking モードが ON。persona に `/no_think` があるか、非 thinking モデルに替える |
 | 物音で反応する | VAD のしきい値を上げる / NVIDIA Broadcast |
+| 画面が「接続できません」 | WebSocket URL が 12394 のとき、ゲートが起動しているか。ゲートなしで使うなら 12393 に戻す |
+| Discord を抜けても反応しない | `--check` で判定を確認。Discord を完全に終了しても直らなければ教えてください |
