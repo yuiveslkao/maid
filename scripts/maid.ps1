@@ -81,13 +81,9 @@ function Get-File([string]$Url, [string]$Out) {
 function Expand-Zip([string]$Zip, [string]$Dest) {
     $tmp = "$Dest.tmp"
     if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-    # Windows 標準の tar.exe は zip も展開でき、Expand-Archive よりずっと速い
-    & tar.exe -xf $Zip -C $tmp
-    if ($LASTEXITCODE -ne 0) {
-        Remove-Item -Recurse -Force $tmp
-        Expand-Archive -Path $Zip -DestinationPath $tmp
-    }
+    # .NET の zip 展開を直接使う（Expand-Archive より速く、tar.exe と違って日本語・中国語のファイル名も扱える）
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $tmp)
     # zip の中身が 1 フォルダだけならその中身を Dest にする
     $items = @(Get-ChildItem $tmp)
     $src = if ($items.Count -eq 1 -and $items[0].PSIsContainer) { $items[0].FullName } else { $tmp }
@@ -184,8 +180,14 @@ function Invoke-Setup {
 
     Say "[6/6] 頭脳のモデル ($Model)" Cyan
     Start-Ollama
-    & $P.Ollama pull $Model
-    if ($LASTEXITCODE -ne 0) { throw "モデル $Model の取得に失敗しました。名前を確認してください。" }
+    # 大きいので途中で通信が切れることがある。ollama pull は続きから再開できるので数回やり直す
+    for ($i = 1; $i -le 5; $i++) {
+        & $P.Ollama pull $Model
+        if ($LASTEXITCODE -eq 0) { break }
+        if ($i -eq 5) { throw "モデル $Model の取得に失敗しました。通信を確認して、もう一度 setup.bat を実行してください（続きから再開します）。" }
+        Say "  取得が途中で止まりました。やり直します ($i/5)..." Yellow
+        Start-Sleep -Seconds 3
+    }
 
     Say "`nセットアップ完了。ダウンロード済みのファイルは runtime\downloads にあります（消しても動きます）。" Green
     Say "次は maid.bat check → start.bat" Green
