@@ -62,15 +62,20 @@ class AivisClient:
 
     def voices(self, refresh: bool = False) -> list[dict]:
         """[{"id": 888753760, "speaker": "まい", "style": "ノーマル"}, ...]"""
+        # 通信中はロックを持たない（AivisSpeech が遅いときに他のリクエストまで巻き込まないため）
         with self._lock:
-            if self._voices is None or refresh:
-                speakers = json.loads(self._request("GET", "/speakers"))
-                self._voices = [
-                    {"id": st["id"], "speaker": sp["name"], "style": st["name"]}
-                    for sp in speakers
-                    for st in sp.get("styles", [])
-                ]
-            return self._voices
+            cached = self._voices
+        if cached is not None and not refresh:
+            return cached
+        speakers = json.loads(self._request("GET", "/speakers"))
+        voices = [
+            {"id": st["id"], "speaker": sp["name"], "style": st["name"]}
+            for sp in speakers
+            for st in sp.get("styles", [])
+        ]
+        with self._lock:
+            self._voices = voices
+        return voices
 
     def resolve(self, voice: str | int | None) -> int:
         voice = str(voice if voice not in (None, "") else self.s.default_voice).strip()

@@ -10,6 +10,7 @@
 #   maid.bat add-voice <URL>  AivisHub の声モデルを追加する
 #   maid.bat discord-check    Discord が通話中と判定されるか確認する
 #   maid.bat doctor           起動中に、返事が来ない・声が出ないなどの原因を調べる
+#   maid.bat logs <名前>      裏の部品のログを別ウィンドウで見る（ollama / bridge / aivisspeech など）
 #   maid.bat stop             裏に残っている maid の部品を全部止める
 #   maid.bat models           取得済みの頭脳のモデル一覧
 #   maid.bat remove-model <名前>  頭脳のモデルを消す
@@ -118,11 +119,16 @@ function Find-AivisExe {
     return $null
 }
 
-# 裏で動く部品は、それぞれ最小化したウィンドウで動かす。
-# 落ちたときはウィンドウが閉じずにエラーが読めるよう、失敗したら pause する。
+# 裏で動く部品はウィンドウを出さず、出力を runtime\logs\<名前>.log に書く。
+# （コンソールに出すと、ウィンドウをクリックして「選択」状態になったとき部品ごと止まってしまうため）
+# start.bat のウィンドウにぶら下がるので、そこで Ctrl+C すると一緒に止まる。
+# ログを見るときは maid.bat logs <名前>（別ウィンドウで表示するので、そちらを選択しても部品は止まらない）
+$LogDir = "$Rt\logs"
 function Start-Window([string]$Title, [string]$Exe, [string[]]$ArgList) {
-    $cmdline = "`"$Exe`" " + ($ArgList -join " ")
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/s /c `"title maid-$Title & $cmdline || pause`"" -WindowStyle Minimized
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $out = "$LogDir\$Title.log"; $err = "$LogDir\$Title.err.log"
+    foreach ($f in @($out, $err)) { if (Test-Path $f) { Remove-Item -Force $f -ErrorAction SilentlyContinue } }
+    Start-Process -FilePath $Exe -ArgumentList $ArgList -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err | Out-Null
 }
 
 function Stop-Maid {
@@ -154,7 +160,7 @@ function Start-Brain {
         # conf.yaml のモデル名に関係なく、maid.settings.json のモデルを使わせる
         $a = @("run", "--no-project", "--python", $PyVer, "python", "`"$Root\bridge\llm_proxy.py`"", "--port", "11434", "--ollama", "http://127.0.0.1:$OllamaPort", "--model", "`"$Model`"")
         Start-Window "brain-proxy" $P.Uv $a
-        if (-not (Wait-Port 11434 120 "頭脳の中継")) { throw "頭脳の中継が起動しませんでした（maid-brain-proxy のウィンドウを確認してください）。" }
+        if (-not (Wait-Port 11434 120 "頭脳の中継")) { throw "頭脳の中継が起動しませんでした（.\maid.bat logs brain-proxy で原因を確認してください）。" }
     }
 }
 
@@ -378,7 +384,7 @@ function Invoke-Start {
         Start-Window "open-llm-vtuber" $P.Uv @("run", "--project", "`"$($P.Olv)`"", "--directory", "`"$($P.Olv)`"", "run_server.py")
     }
     if (-not (Wait-Port 12393 1200 "Open-LLM-VTuber（初回は数分かかります）")) {
-        throw "Open-LLM-VTuber が起動しませんでした（maid-open-llm-vtuber のウィンドウを確認してください）。"
+        throw "Open-LLM-VTuber が起動しませんでした（.\maid.bat logs open-llm-vtuber で原因を確認してください）。"
     }
 
     $wsUrl = $direct
@@ -387,7 +393,7 @@ function Invoke-Start {
             $wsUrl = "ws://127.0.0.1:12394/client-ws"
             Say "  Discord ゲート: 使用中（Discord で通話中は声に反応しません）" Green
         } else {
-            Say "  Discord ゲート: うまく動かないので使わずに直結します（maid-discord-gate のウィンドウを確認してください）" Yellow
+            Say "  Discord ゲート: うまく動かないので使わずに直結します（.\maid.bat logs discord-gate で原因を確認してください）" Yellow
         }
     }
     Write-FrontendDefaults $wsUrl
@@ -404,7 +410,7 @@ function Invoke-Start {
         $t = [DateTimeOffset]::Now.ToUnixTimeSeconds()
         Start-Process "msedge.exe" "--app=http://127.0.0.1:12393/?t=$t"
     }
-    Say "`n準備完了。画面を閉じても裏の部品は動き続けます。" Green
+    Say "`n準備完了。画面を閉じても裏の部品は動き続けます。ログ: .\maid.bat logs <名前>" Green
     Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
     try {
         while (Test-Port 12393) { Start-Sleep -Seconds 2 }
@@ -430,7 +436,7 @@ function Invoke-Doctor {
 
     Say "頭脳" Cyan
     $up = Test-Port $OllamaPort
-    Res "Ollama (11436)" $up $(if ($up) { "起動中" } else { "止まっています → start.bat を実行（maid-ollama のウィンドウを確認）" })
+    Res "Ollama (11436)" $up $(if ($up) { "起動中" } else { "止まっています → start.bat を実行（.\maid.bat logs ollama で確認）" })
     if ($up) {
         try {
             $names = @((Invoke-RestMethod "http://127.0.0.1:$OllamaPort/api/tags").models | ForEach-Object { $_.name })
@@ -439,7 +445,7 @@ function Invoke-Doctor {
         } catch { Res "モデル" $false "一覧を取得できません: $($_.Exception.Message)" }
     }
     $up = Test-Port 11434
-    Res "頭脳の中継 (11434)" $up $(if ($up) { "起動中" } else { "止まっています（maid-brain-proxy のウィンドウを確認）" })
+    Res "頭脳の中継 (11434)" $up $(if ($up) { "起動中" } else { "止まっています（.\maid.bat logs brain-proxy で確認）" })
     if ($up) {
         try {
             $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -451,9 +457,9 @@ function Invoke-Doctor {
 
     Say "声" Cyan
     $up = Test-Port 10101
-    Res "AivisSpeech (10101)" $up $(if ($up) { "起動中" } else { "止まっています（maid-aivisspeech のウィンドウを確認）" })
+    Res "AivisSpeech (10101)" $up $(if ($up) { "起動中" } else { "止まっています（.\maid.bat logs aivisspeech で確認）" })
     $up = Test-Port 10102
-    Res "声の中継 (10102)" $up $(if ($up) { "起動中" } else { "止まっています（maid-bridge のウィンドウを確認）" })
+    Res "声の中継 (10102)" $up $(if ($up) { "起動中" } else { "止まっています（.\maid.bat logs bridge で確認）" })
     if ($up) {
         try {
             $r = Post-Json "http://127.0.0.1:10102/v1/audio/speech" @{ model = "aivisspeech"; voice = "default"; input = "テストです"; response_format = "wav" }
@@ -467,7 +473,7 @@ function Invoke-Doctor {
 
     Say "本体と画面" Cyan
     $up = Test-Port 12393
-    Res "Open-LLM-VTuber (12393)" $up $(if ($up) { "起動中" } else { "止まっています（maid-open-llm-vtuber のウィンドウを確認）" })
+    Res "Open-LLM-VTuber (12393)" $up $(if ($up) { "起動中" } else { "止まっています（.\maid.bat logs open-llm-vtuber で確認）" })
     if ($up) {
         try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:12393/maid-defaults.js" | Out-Null; Res "画面の初期設定" $true "配信されています" }
         catch { Res "画面の初期設定" $false "maid-defaults.js が配信されていません" }
@@ -513,8 +519,22 @@ switch ($Command) {
         Start-OllamaServer
         & $P.Ollama rm $Arg
     }
+    "logs" {
+        $names = @(Get-ChildItem "$LogDir\*.log" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike "*.err.log" } | ForEach-Object { $_.BaseName })
+        if (-not $Arg) {
+            Say "使い方: maid.bat logs <名前>   （名前: $($names -join ', ')）" Gray
+            Say "本体の詳しいログ: $($P.Olv)\logs\" Gray
+            return
+        }
+        foreach ($f in @("$LogDir\$Arg.log", "$LogDir\$Arg.err.log")) {
+            if (Test-Path $f) {
+                # 別ウィンドウで流し続ける（このウィンドウを選択しても部品は止まらない）
+                Start-Process powershell -ArgumentList "-NoProfile", "-NoExit", "-Command", "`$host.UI.RawUI.WindowTitle='maid-log $Arg'; Get-Content -Encoding UTF8 -Tail 200 -Wait '$f'"
+            }
+        }
+    }
     "discord-check" { Invoke-UvPython @("$Root\gate\discord_gate.py", "--check") @("websockets>=13") }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 16 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 17 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }
