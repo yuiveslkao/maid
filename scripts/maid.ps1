@@ -9,6 +9,7 @@
 #   maid.bat bench            応答速度を測る
 #   maid.bat add-voice <URL>  AivisHub の声モデルを追加する
 #   maid.bat discord-check    Discord が通話中と判定されるか確認する
+#   maid.bat doctor           起動中に、返事が来ない・声が出ないなどの原因を調べる
 #   maid.bat stop             裏に残っている maid の部品を全部止める
 #   maid.bat models           取得済みの頭脳のモデル一覧
 #   maid.bat remove-model <名前>  頭脳のモデルを消す
@@ -414,10 +415,76 @@ function Invoke-Start {
     }
 }
 
+# ------------------------------------------------------------------ doctor
+# 起動中の部品を、声 → 頭脳 → 本体 の順に実際に動かしてみて、どこで止まっているかを表示する
+function Invoke-Doctor {
+    function Res([string]$name, [bool]$good, [string]$detail) {
+        $mark = if ($good) { "OK " } else { "NG " }
+        Write-Host ("  [{0}] {1,-22} {2}" -f $mark, $name, $detail) -ForegroundColor $(if ($good) { "Green" } else { "Yellow" })
+    }
+    function Post-Json([string]$url, $obj, [int]$timeout = 120) {
+        $body = [Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Depth 6 -Compress))
+        return Invoke-WebRequest -UseBasicParsing -Method Post -Uri $url -Body $body -ContentType "application/json; charset=utf-8" -TimeoutSec $timeout
+    }
+    Say "設定: 頭脳 = $Model / 声 = $Voice" Cyan
+
+    Say "頭脳" Cyan
+    $up = Test-Port $OllamaPort
+    Res "Ollama (11436)" $up $(if ($up) { "起動中" } else { "止まっています → start.bat を実行（maid-ollama のウィンドウを確認）" })
+    if ($up) {
+        try {
+            $names = @((Invoke-RestMethod "http://127.0.0.1:$OllamaPort/api/tags").models | ForEach-Object { $_.name })
+            $has = ($names -contains $Model) -or ($names -contains "$($Model):latest")
+            Res "モデル" $has $(if ($has) { $Model } else { "$Model が取得されていません（取得済み: $($names -join ', ')）→ .\maid.bat setup -Model $Model" })
+        } catch { Res "モデル" $false "一覧を取得できません: $($_.Exception.Message)" }
+    }
+    $up = Test-Port 11434
+    Res "頭脳の中継 (11434)" $up $(if ($up) { "起動中" } else { "止まっています（maid-brain-proxy のウィンドウを確認）" })
+    if ($up) {
+        try {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $r = Post-Json "http://127.0.0.1:11434/v1/chat/completions" @{ model = $Model; stream = $false; max_tokens = 40; messages = @(@{ role = "user"; content = "こんにちは。一言で返事して。" }) } 300
+            $text = ([Text.Encoding]::UTF8.GetString($r.RawContentStream.ToArray()) | ConvertFrom-Json).choices[0].message.content
+            Res "頭脳の返事" ([bool]$text) ("「{0}」 ({1:N1} 秒、初回はモデル読み込みで遅い)" -f $text, $sw.Elapsed.TotalSeconds)
+        } catch { Res "頭脳の返事" $false "失敗: $($_.Exception.Message)" }
+    }
+
+    Say "声" Cyan
+    $up = Test-Port 10101
+    Res "AivisSpeech (10101)" $up $(if ($up) { "起動中" } else { "止まっています（maid-aivisspeech のウィンドウを確認）" })
+    $up = Test-Port 10102
+    Res "声の中継 (10102)" $up $(if ($up) { "起動中" } else { "止まっています（maid-bridge のウィンドウを確認）" })
+    if ($up) {
+        try {
+            $r = Post-Json "http://127.0.0.1:10102/v1/audio/speech" @{ model = "aivisspeech"; voice = "default"; input = "テストです"; response_format = "wav" }
+            Res "声の合成" ($r.RawContentLength -gt 1000) "$([math]::Round($r.RawContentLength / 1KB)) KB の音声ができました"
+        } catch {
+            $msg = $_.Exception.Message
+            try { $msg = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream(), [Text.Encoding]::UTF8)).ReadToEnd() } catch {}
+            Res "声の合成" $false "失敗: $msg"
+        }
+    }
+
+    Say "本体と画面" Cyan
+    $up = Test-Port 12393
+    Res "Open-LLM-VTuber (12393)" $up $(if ($up) { "起動中" } else { "止まっています（maid-open-llm-vtuber のウィンドウを確認）" })
+    if ($up) {
+        try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:12393/maid-defaults.js" | Out-Null; Res "画面の初期設定" $true "配信されています" }
+        catch { Res "画面の初期設定" $false "maid-defaults.js が配信されていません" }
+    }
+    if (-not $NoDiscordGate) {
+        $g = (Test-Port 12394) -and (Test-Gate)
+        Res "Discord ゲート (12394)" $g $(if ($g) { "本体まで通じています" } else { "使えません（画面は本体に直結されます）" })
+    }
+    $log = Get-ChildItem "$($P.Olv)\logs\debug_*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+    if ($log) { Say "`n本体のログ: $($log.FullName)" Gray }
+}
+
 # ------------------------------------------------------------------ others
 switch ($Command) {
     "setup" { Invoke-Setup }
     "check" { Invoke-Check }
+    "doctor" { Invoke-Doctor }
     "start" { Invoke-Start }
     "bench" {
         Start-Brain
@@ -448,6 +515,6 @@ switch ($Command) {
     }
     "discord-check" { Invoke-UvPython @("$Root\gate\discord_gate.py", "--check") @("websockets>=13") }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 15 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 16 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }

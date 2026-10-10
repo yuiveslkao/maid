@@ -210,6 +210,25 @@ maid.bat bench qwen3:8b,qwen3:4b
 
 ## うまくいかないとき
 
+まず start.bat で起動したまま、別の PowerShell で:
+
+```powershell
+.\maid.bat doctor
+```
+
+頭脳・声・本体を順に実際に動かして、どこで止まっているかを OK / NG で表示します。
+詳しく調べるときは、表示の最後に出る**本体のログ**（`runtime\Open-LLM-VTuber\logs\debug_日付.log`）を見ます。
+
+### ログは消していい？
+
+| 場所 | 中身 | 消していい？ |
+|---|---|---|
+| `runtime\Open-LLM-VTuber\logs\` | 本体のログ | いつでも OK（30 日で自動削除もされる） |
+| `runtime\logs\` | 古い版の maid のログ | OK（今は使っていない） |
+| `runtime\downloads\` | setup でダウンロードしたファイル | OK（setup をやり直すときにまたダウンロードする） |
+| `runtime\Open-LLM-VTuber\chat_history\` | **会話の履歴** | 消すと過去の会話が消える。記憶機能（Phase 3）でも使う予定 |
+
+
 | 症状 | 確認すること |
 |---|---|
 | 声が出ない | <http://127.0.0.1:10102/health> を開く。502 なら AivisSpeech Engine が起動していない |
