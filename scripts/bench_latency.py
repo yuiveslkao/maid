@@ -19,12 +19,31 @@ CLAUSE_END = "、。！？!?,."
 SYSTEM = "あなたは明るいアシスタントです。日本語の話し言葉で1〜2文で短く答えてください。"
 
 
-def llm_first_clause(base_url: str, model: str, prompt: str) -> tuple[float, float, str, float]:
+def gpu_share(base_url: str, model: str) -> str:
+    """Ollama の /api/ps から、モデルが GPU に何割載っているかを返す。"""
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/").removesuffix("/v1") + "/api/ps", timeout=10) as res:
+            for m in json.loads(res.read()).get("models", []):
+                if m.get("name") == model or m.get("model") == model:
+                    size, vram = m.get("size") or 0, m.get("size_vram") or 0
+                    if size:
+                        pct = vram / size * 100
+                        warn = "" if pct >= 99 else "  ← 一部が CPU で動いていて遅くなります"
+                        return f"{size / 2**30:.1f}GB のうち GPU {pct:.0f}%{warn}"
+    except (OSError, ValueError):
+        pass
+    return "不明"
+
+
+def llm_first_clause(base_url: str, model: str, prompt: str, think: bool = False) -> tuple[float, float, str, float]:
     """(最初のトークンまでの秒, 最初の読点/句点までの秒, 最初の文節, 考えていた秒)"""
-    body = json.dumps({
-        "model": model, "stream": True, "temperature": 0.8,
+    req = {
+        "model": model, "stream": True, "temperature": 0.7, "top_p": 0.8,
         "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
-    }).encode()
+    }
+    if not think:
+        req["reasoning_effort"] = "none"  # maid の頭脳の中継と同じ条件で測る
+    body = json.dumps(req).encode()
     req = urllib.request.Request(base_url.rstrip("/") + "/chat/completions", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
     start = time.perf_counter()
@@ -72,7 +91,8 @@ def tts_time(bridge_url: str, text: str) -> float:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--model", action="append", help="Ollama のモデル名（複数指定可）")
-    p.add_argument("--ollama", default="http://localhost:11434/v1")
+    p.add_argument("--ollama", default="http://127.0.0.1:11436/v1", help="Ollama 本体（maid では 11436）")
+    p.add_argument("--think", action="store_true", help="考えるモードを切らずに測る")
     p.add_argument("--bridge", default="http://127.0.0.1:10102/v1")
     p.add_argument("--asr", type=float, default=0.15, help="音声認識にかかる想定秒（SenseVoice CPU で 0.1〜0.2 秒程度）")
     p.add_argument("--vad", type=float, default=0.45,
@@ -81,10 +101,12 @@ def main() -> None:
 
     for model in a.model or ["qwen3:8b"]:
         print(f"\n=== {model} ===")
-        llm_first_clause(a.ollama, model, "こんにちは")  # ウォームアップ（モデル読み込み）
+        print("  読み込み中...（モデルを切り替えた直後は 1 分ほどかかります）", flush=True)
+        llm_first_clause(a.ollama, model, "こんにちは", a.think)  # ウォームアップ（モデル読み込み）
+        print(f"  メモリ: {gpu_share(a.ollama, model)}")
         firsts, clauses, ttses = [], [], []
         for prompt in PROMPTS:
-            ttft, clause_t, clause, thought = llm_first_clause(a.ollama, model, prompt)
+            ttft, clause_t, clause, thought = llm_first_clause(a.ollama, model, prompt, a.think)
             try:
                 tts_t = tts_time(a.bridge, clause or "うん")
             except OSError as e:

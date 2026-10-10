@@ -18,7 +18,7 @@
 
 - **インストーラー・winget・PATH の変更は使いません。** 必要なものは全部 `maid\runtime\` に入ります。
 - Python や Git を PC に入れる必要もありません（Python は `runtime\` の中に専用のものが入ります）。
-- やめたくなったら **maid フォルダを消せば終わり**です（例外は「9. 片付け方」）。
+- やめたくなったら **maid フォルダを消せば終わり**です（例外は「10. 片付け方」）。
 
 ## 1. PC に元から必要なもの（確認だけ）
 
@@ -69,12 +69,41 @@ maid.bat check
 
 `NG` が出たら、その下に出る対処を見てください。
 
-## 4. キャラの設定
+## 4. いつも使う設定（maid.settings.json）
+
+初めて `maid.bat` を動かすと、maid フォルダに `maid.settings.json` ができます。メモ帳で書き換えられます。
+
+```json
+{
+  "model": "qwen3:8b",
+  "voice": "コハク/あまあま",
+  "speed": 1.0
+}
+```
+
+| 項目 | 意味 |
+|---|---|
+| model | 頭脳のモデル（Ollama の名前）。conf.yaml ではなくこちらが使われます |
+| voice | 声（「話者名/スタイル名」かスタイル ID）。一覧は起動中に <http://127.0.0.1:10102/v1/voices> |
+| speed | 話す速さ（1.0 が標準） |
+
+変えたら `.\maid.bat stop` → `.\start.bat` で反映されます。
+
+### 頭脳のモデルを変える
+
+1. 取得する: `.\maid.bat setup -Model <名前>`（例: `huihui_ai/qwen3.5-abliterated:9b`）
+2. 比べる（start.bat で起動中に）: `.\maid.bat bench qwen3:8b,<名前>`
+   - 「メモリ: ○GB のうち GPU 100%」になっていれば全部 GPU に載っています。100% 未満だと一部が CPU で動いて遅くなります。
+3. 気に入ったら `maid.settings.json` の `model` を書き換える。
+
+取得済みの一覧は `.\maid.bat models`、要らなくなったモデルは `.\maid.bat remove-model <名前>` で消せます。
+
+## 5. キャラの設定
 
 `runtime\Open-LLM-VTuber\conf.yaml` の `character_name` / `persona_prompt` を書き換えます。
 （元の雛形は `config\open-llm-vtuber\conf.yaml`。setup は既にある conf.yaml を上書きしません）
 
-## 5. 起動
+## 6. 起動
 
 `start.bat` をダブルクリック。次の順に、それぞれ**最小化したウィンドウ**で起動します（タイトルが `maid-...`）。
 
@@ -97,8 +126,8 @@ maid.bat check
 - 初回はマイクの使用許可を聞かれるので「許可」してください。
 
 ```bat
-rem 例: 声と話速を指定して起動 / AivisSpeech を GPU で動かす / 画面を自動で開かない
-maid.bat start -Voice "まい/ノーマル" -Speed 1.1
+rem 例: その回だけ声と話速を変える / AivisSpeech を GPU で動かす / 画面を自動で開かない
+maid.bat start -Voice "まお/ノーマル" -Speed 1.1
 maid.bat start -AivisGpu
 maid.bat start -NoBrowser
 ```
@@ -114,7 +143,7 @@ maid.bat start -NoBrowser
   - モデルごとにライセンスがあります。個人利用ならほぼ問題ありませんが、念のため確認してください。
 - いつも使う声は `start.bat` を編集して `-Voice` を付けるか、`conf.yaml` の `openai_tts.voice` に書きます。
 
-## 6. 画面の設定
+## 7. 画面の設定
 
 **次の設定は maid が自動で入れるので、何もしなくて大丈夫です。**
 
@@ -135,7 +164,7 @@ Live2D のモデル（初期は Mao）は表示されますが、Phase 1 では�
 > 雑音対策をもっとしたい場合: RTX 3060 Ti は **NVIDIA Broadcast** のノイズ除去が使えます（マイクを「NVIDIA Broadcast」の仮想マイクに切り替える）。
 > ただし別途インストールが必要で、GPU も少し使います。まずは VAD のしきい値調整で足りるか試してください。
 
-## 7. Discord 通話中に止まるか確かめる
+## 8. Discord 通話中に止まるか確かめる
 
 1. Discord でボイスチャンネルに入る。
 2. 画面に「Discord 通話中なので、声には反応しません」と出て、話しかけても返事をしなければ OK。
@@ -151,7 +180,7 @@ maid.bat discord-check
   Windows の「設定 → プライバシーとセキュリティ → マイク」で「デスクトップアプリがマイクにアクセスできるようにする」が ON である必要があります（Discord で話せていれば ON です）。
 - Discord の設定画面でマイクテストをしている間も「通話中」と判定されます。
 
-## 8. 速さを測る
+## 9. 速さを測る
 
 start.bat で起動している状態で、別のウィンドウから:
 
@@ -165,7 +194,7 @@ maid.bat bench qwen3:8b,qwen3:4b
 「LLM が最初の読点/句点まで出すのにかかった時間」と「その部分を AivisSpeech で合成する時間」が出ます。
 話し終わってから声が出るまで ≒ **VAD の待ち + 音声認識 + この 2 つ** です。
 
-## 9. 片付け方
+## 10. 片付け方
 
 1. maid フォルダを消す（`runtime\` ごと消えます）。
 2. maid フォルダの外に作られるもの（消したければ手で消す）:
@@ -173,7 +202,7 @@ maid.bat bench qwen3:8b,qwen3:4b
    - `%USERPROFILE%\.ollama` … Ollama の識別用の鍵ファイルなど（数 KB）。モデル本体は `runtime\` にあります。
    - Edge に残る「127.0.0.1 のマイク許可」と画面の設定。
 
-## 10. 外に出ていないか確認する
+## 11. 外に出ていないか確認する
 
 - `conf.yaml` で `use_mcpp: False`（検索ツールなし）になっている。
 - 起動ログに出る URL がすべて `localhost` / `127.0.0.1` になっている。

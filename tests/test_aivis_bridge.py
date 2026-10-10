@@ -96,6 +96,10 @@ class BridgeTest(unittest.TestCase):
         self.speech({"voice": "花音", "input": "a"})
         self.assertEqual([c[0] for c in FakeAivis.synth_calls], [200, 101, 200])
 
+    def test_unknown_style_falls_back_to_speaker(self):
+        self.speech({"voice": "花音/あまあま", "input": "a"})
+        self.assertEqual(FakeAivis.synth_calls[0][0], 200)
+
     def test_request_speed_multiplies(self):
         self.speech({"voice": "100", "input": "a", "speed": 1.5})
         self.assertAlmostEqual(FakeAivis.synth_calls[0][1]["speedScale"], 1.8)

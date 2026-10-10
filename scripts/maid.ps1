@@ -10,13 +10,15 @@
 #   maid.bat add-voice <URL>  AivisHub の声モデルを追加する
 #   maid.bat discord-check    Discord が通話中と判定されるか確認する
 #   maid.bat stop             裏に残っている maid の部品を全部止める
+#   maid.bat models           取得済みの頭脳のモデル一覧
+#   maid.bat remove-model <名前>  頭脳のモデルを消す
 
 param(
     [Parameter(Position = 0)][string]$Command = "help",
     [Parameter(Position = 1)][string]$Arg = "",
-    [string]$Model = "qwen3:8b",     # Ollama のモデル
-    [string]$Voice = "default",      # AivisSpeech のスタイル ID か「話者名/スタイル名」
-    [double]$Speed = 1.0,
+    [string]$Model = "",             # Ollama のモデル（省略時は maid.settings.json）
+    [string]$Voice = "",             # AivisSpeech のスタイル ID か「話者名/スタイル名」（省略時は maid.settings.json）
+    [double]$Speed = 0,
     [switch]$AivisGpu,               # AivisSpeech を GPU (DirectML) で動かす（VRAM を食う）
     [switch]$NoDiscordGate,
     [switch]$NoBrowser
@@ -37,6 +39,17 @@ $P = @{
     Olv         = "$Rt\Open-LLM-VTuber"
     Downloads   = "$Rt\downloads"
 }
+# --- いつも使う設定（maid.settings.json。無ければ作る。コマンドの -Model などが優先） ---
+$SettingsPath = Join-Path $Root "maid.settings.json"
+if (-not (Test-Path $SettingsPath)) {
+    $default = "{`n  `"model`": `"qwen3:8b`",`n  `"voice`": `"コハク/あまあま`",`n  `"speed`": 1.0`n}`n"
+    [IO.File]::WriteAllText($SettingsPath, $default, (New-Object Text.UTF8Encoding $false))
+}
+$Settings = [IO.File]::ReadAllText($SettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+if (-not $Model) { $Model = if ($Settings.model) { [string]$Settings.model } else { "qwen3:8b" } }
+if (-not $Voice) { $Voice = if ($Settings.voice) { [string]$Settings.voice } else { "default" } }
+if ($Speed -le 0) { $Speed = if ($Settings.speed) { [double]$Settings.speed } else { 1.0 } }
+
 $OlvTag = "v1.2.1"
 $OlvFrontendCommit = "06a659b114fff788cf0daaa86e484576db4975bf"   # v1.2.1 が参照しているビルド済み画面
 
@@ -137,7 +150,8 @@ function Start-Brain {
     }
     Start-OllamaServer
     if (-not (Test-Port 11434)) {
-        $a = @("run", "--no-project", "--python", $PyVer, "python", "`"$Root\bridge\llm_proxy.py`"", "--port", "11434", "--ollama", "http://127.0.0.1:$OllamaPort")
+        # conf.yaml のモデル名に関係なく、maid.settings.json のモデルを使わせる
+        $a = @("run", "--no-project", "--python", $PyVer, "python", "`"$Root\bridge\llm_proxy.py`"", "--port", "11434", "--ollama", "http://127.0.0.1:$OllamaPort", "--model", "`"$Model`"")
         Start-Window "brain-proxy" $P.Uv $a
         if (-not (Wait-Port 11434 120 "頭脳の中継")) { throw "頭脳の中継が起動しませんでした（maid-brain-proxy のウィンドウを確認してください）。" }
     }
@@ -303,13 +317,13 @@ function Write-FrontendDefaults([string]$WsUrl) {
     var ls = window.localStorage;
     ls.setItem("wsUrl", JSON.stringify("$WsUrl"));
     ls.setItem("baseUrl", JSON.stringify("http://127.0.0.1:12393"));
-    if (ls.getItem("maidDefaults") !== "1") {
+    if (ls.getItem("maidDefaults") !== "2") {
       ls.setItem("micOn", "true");
       ls.setItem("autoStopMic", "false");            // 話している途中でも割り込めるように
       ls.setItem("autoStartMicOn", "true");          // 割り込んだあともマイクを戻す
       ls.setItem("autoStartMicOnConvEnd", "true");   // 返事が終わったらマイクを戻す（毎回クリック不要）
       ls.setItem("vadSettings", JSON.stringify({ positiveSpeechThreshold: 50, negativeSpeechThreshold: 35, redemptionFrames: 14 }));
-      ls.setItem("maidDefaults", "1");
+      ls.setItem("maidDefaults", "2");
     }
   } catch (e) {}
 })();
@@ -377,9 +391,17 @@ function Invoke-Start {
     }
     Write-FrontendDefaults $wsUrl
 
+    try {
+        Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:12393/maid-defaults.js" | Out-Null
+    } catch {
+        Say "  画面の初期設定 (maid-defaults.js) が配信されていません。マイク設定は画面から手で変えてください。" Yellow
+    }
+    Say "  頭脳: $Model / 声: $Voice" Gray
     if (-not $NoBrowser) {
-        # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）
-        Start-Process "msedge.exe" "--app=http://127.0.0.1:12393"
+        # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）。
+        # 末尾の ?t= は、Edge が古いページを使い回さないようにするため
+        $t = [DateTimeOffset]::Now.ToUnixTimeSeconds()
+        Start-Process "msedge.exe" "--app=http://127.0.0.1:12393/?t=$t"
     }
     Say "`n準備完了。画面を閉じても裏の部品は動き続けます。" Green
     Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
@@ -400,7 +422,7 @@ switch ($Command) {
     "bench" {
         Start-Brain
         $models = if ($Arg) { $Arg -split "," } else { @($Model) }
-        $a = @("$Root\scripts\bench_latency.py")
+        $a = @("$Root\scripts\bench_latency.py", "--ollama", "http://127.0.0.1:$OllamaPort/v1")
         foreach ($m in $models) { $a += @("--model", $m) }
         Invoke-UvPython $a
     }
@@ -415,8 +437,17 @@ switch ($Command) {
         $n = Stop-Maid
         Say "止めました ($n 個)" Green
     }
+    "models" {
+        Start-OllamaServer
+        & $P.Ollama list
+    }
+    "remove-model" {
+        if (-not $Arg) { throw "使い方: maid.bat remove-model <モデル名>" }
+        Start-OllamaServer
+        & $P.Ollama rm $Arg
+    }
     "discord-check" { Invoke-UvPython @("$Root\gate\discord_gate.py", "--check") @("websockets>=13") }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 13 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 15 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }

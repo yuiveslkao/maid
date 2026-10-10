@@ -88,6 +88,12 @@ class AivisClient:
             for v in voices:
                 if v["speaker"] == speaker and (not style or v["style"] == style):
                     return v["id"]
+            if style and not refresh:
+                continue
+            for v in voices:  # スタイル名が違うだけなら、その話者の最初のスタイルで話す
+                if v["speaker"] == speaker:
+                    log.warning("'%s' にスタイル '%s' が無いので '%s' を使います（/v1/voices で一覧を確認）", speaker, style, v["style"])
+                    return v["id"]
         raise LookupError(f"voice '{voice}' が AivisSpeech に見つかりません（/v1/voices で一覧を確認）")
 
     def synthesize(self, text: str, voice: str | int | None = None, speed: float | None = None) -> bytes:

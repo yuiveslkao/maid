@@ -106,6 +106,18 @@ class ProxyTest(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/api/tags") as res:
             self.assertEqual(json.loads(res.read())["models"][0]["name"], "qwen3:8b")
 
+    def test_model_override(self):
+        proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", think=False, top_p=None, model="other:9b"))
+        try:
+            for path in ("/api/chat", "/v1/chat/completions"):
+                req = urllib.request.Request(f"http://127.0.0.1:{proxy.server_port}{path}", data=json.dumps({"model": "qwen3:8b"}).encode(),
+                                             headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req) as res:
+                    res.read()
+            self.assertEqual([b["model"] for _, b in FakeOllama.requests], ["other:9b", "other:9b"])
+        finally:
+            proxy.shutdown()
+
     def test_upstream_down_gives_502(self):
         proxy = serve(llm_proxy.make_handler("http://127.0.0.1:1", think=False, top_p=None))
         try:
