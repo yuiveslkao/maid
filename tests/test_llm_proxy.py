@@ -23,6 +23,31 @@ class FakeOllama(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeOllama.requests.append((self.path, body))
+        if self.path == "/v1/chat/completions" and body.get("model") == "rp-model" and body.get("reasoning_effort"):
+            # 考えるモードの無いモデル: 指定を付けると中身なしで終わる（Aratako の RP モデルで実際に起きた）
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(b'data: {"choices":[{"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+                self.close_connection = True
+            else:
+                out = json.dumps({"choices": [{"message": {"role": "assistant", "content": ""}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+            return
+        if self.path == "/v1/chat/completions" and not body.get("stream"):
+            out = json.dumps({"choices": [{"message": {"role": "assistant", "content": "はい"}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         if self.path == "/v1/chat/completions":
             # 本物と同じく、少しずつ SSE で返す（長さ不明・接続を閉じて終わり）
             self.send_response(200)
@@ -96,6 +121,21 @@ class ProxyTest(unittest.TestCase):
         path, body = FakeOllama.requests[0]
         self.assertEqual(path, "/v1/chat/completions")
         self.assertEqual((body["reasoning_effort"], body["top_p"], body["temperature"]), ("none", 0.8, 0.8))
+
+    def test_retries_without_effort_when_reply_is_empty(self):
+        try:
+            from openai import OpenAI
+        except ImportError:
+            self.skipTest("openai パッケージなし")
+        client = OpenAI(api_key="x", base_url=self.base + "/v1")
+        for _ in range(2):
+            stream = client.chat.completions.create(model="rp-model", stream=True, messages=[{"role": "user", "content": "やあ"}])
+            self.assertEqual("".join((c.choices[0].delta.content or "") for c in stream), "うん、いいよ")
+        efforts = [b.get("reasoning_effort") for _, b in FakeOllama.requests]
+        # 1 回目: 付けて空 → 外して聞き直し。2 回目: 最初から付けない
+        self.assertEqual(efforts, ["none", None, None])
+        r = client.chat.completions.create(model="normal", stream=False, messages=[{"role": "user", "content": "やあ"}])
+        self.assertEqual(r.choices[0].message.content, "はい")
 
     def test_other_paths_pass_through(self):
         req = urllib.request.Request(self.base + "/api/chat", data=json.dumps({"model": "m", "keep_alive": -1}).encode(),

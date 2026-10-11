@@ -44,13 +44,15 @@ $P = @{
 # --- いつも使う設定（maid.settings.json。無ければ作る。コマンドの -Model などが優先） ---
 $SettingsPath = Join-Path $Root "maid.settings.json"
 if (-not (Test-Path $SettingsPath)) {
-    $default = "{`n  `"model`": `"qwen3:8b`",`n  `"voice`": `"コハク/あまあま`",`n  `"speed`": 1.0`n}`n"
+    $default = "{`n  `"model`": `"qwen3:8b`",`n  `"voice`": `"コハク/あまあま`",`n  `"speed`": 1.0,`n  `"asr_language`": `"ja`"`n}`n"
     [IO.File]::WriteAllText($SettingsPath, $default, (New-Object Text.UTF8Encoding $false))
 }
 $Settings = [IO.File]::ReadAllText($SettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
 if (-not $Model) { $Model = if ($Settings.model) { [string]$Settings.model } else { "qwen3:8b" } }
 if (-not $Voice) { $Voice = if ($Settings.voice) { [string]$Settings.voice } else { "default" } }
 if ($Speed -le 0) { $Speed = if ($Settings.speed) { [double]$Settings.speed } else { 1.0 } }
+# 音声認識の言語（ja / auto / en / zh / ko / yue）。自動判定だと短い発話を韓国語などと間違えるので既定は ja
+$AsrLanguage = if ($Settings.asr_language) { [string]$Settings.asr_language } else { "ja" }
 
 $OlvTag = "v1.2.1"
 $OlvFrontendCommit = "06a659b114fff788cf0daaa86e484576db4975bf"   # v1.2.1 が参照しているビルド済み画面
@@ -343,6 +345,23 @@ function Write-FrontendDefaults([string]$WsUrl) {
     }
 }
 
+# Open-LLM-VTuber v1.2.1 は SenseVoice の言語を設定できないので、言語指定の 1 行を足す（何度実行しても同じ結果）
+function Set-OlvPatches {
+    $f = "$($P.Olv)\src\open_llm_vtuber\asr\sherpa_onnx_asr.py"
+    if (-not (Test-Path $f)) { return }
+    $t = [IO.File]::ReadAllText($f)
+    $line = "language=`"$AsrLanguage`",  # maid-asr-language"
+    if ($t -match "language=`"[a-z]*`",  # maid-asr-language") {
+        $new = [regex]::Replace($t, 'language="[a-z]*",  # maid-asr-language', $line)
+    } else {
+        $i = $t.IndexOf("model=self.sense_voice,")
+        if ($i -lt 0) { Say "  音声認識の言語を固定できませんでした（Open-LLM-VTuber の版が違う？）" Yellow; return }
+        $nl = if ($t.Contains("`r`n")) { "`r`n" } else { "`n" }
+        $new = $t.Insert($i + "model=self.sense_voice,".Length, "$nl                $line")
+    }
+    if ($new -ne $t) { [IO.File]::WriteAllText($f, $new, (New-Object Text.UTF8Encoding $false)) }
+}
+
 # ゲート経由で本体につながり、最初のメッセージが返ってくるか確かめる
 function Test-Gate {
     try {
@@ -378,6 +397,7 @@ function Invoke-Start {
 
     $direct = "ws://127.0.0.1:12393/client-ws"
     Write-FrontendDefaults $direct
+    Set-OlvPatches
 
     Say "Open-LLM-VTuber (12393)" Cyan
     if (-not (Test-Port 12393)) {
@@ -403,7 +423,7 @@ function Invoke-Start {
     } catch {
         Say "  画面の初期設定 (maid-defaults.js) が配信されていません。マイク設定は画面から手で変えてください。" Yellow
     }
-    Say "  頭脳: $Model / 声: $Voice" Gray
+    Say "  頭脳: $Model / 声: $Voice / 音声認識: $AsrLanguage" Gray
     if (-not $NoBrowser) {
         # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）。
         # 末尾の ?t= は、Edge が古いページを使い回さないようにするため

@@ -77,7 +77,8 @@ maid.bat check
 {
   "model": "qwen3:8b",
   "voice": "コハク/あまあま",
-  "speed": 1.0
+  "speed": 1.0,
+  "asr_language": "ja"
 }
 ```
 
@@ -86,6 +87,7 @@ maid.bat check
 | model | 頭脳のモデル（Ollama の名前）。conf.yaml ではなくこちらが使われます |
 | voice | 声（「話者名/スタイル名」かスタイル ID）。一覧は起動中に <http://127.0.0.1:10102/v1/voices> |
 | speed | 話す速さ（1.0 が標準） |
+| asr_language | 音声認識の言語。`ja`（日本語固定・おすすめ）か `auto`（自動判定。短い発話を韓国語などと間違えやすい） |
 
 変えたら `.\maid.bat stop` → `.\start.bat` で反映されます。
 
@@ -95,6 +97,8 @@ maid.bat check
 2. 比べる（start.bat で起動中に）: `.\maid.bat bench qwen3:8b,<名前>`
    - 「メモリ: ○GB のうち GPU 100%」になっていれば全部 GPU に載っています。100% 未満だと一部が CPU で動いて遅くなります。
 3. 気に入ったら `maid.settings.json` の `model` を書き換える。
+
+考えるモードの無いモデル（ロールプレイ用など）は、最初の 1 回だけ返事が少し遅れることがあります。頭脳の中継が自動で呼び方を合わせるためです。
 
 取得済みの一覧は `.\maid.bat models`、要らなくなったモデルは `.\maid.bat remove-model <名前>` で消せます。
 

@@ -53,8 +53,19 @@ def rewrite_chat_request(body: bytes, think: bool, top_p: float | None) -> bytes
     return json.dumps(req, ensure_ascii=False).encode("utf-8")
 
 
+def _has_answer(event: dict) -> bool:
+    """OpenAI 形式の応答（ストリームの 1 イベント、または非ストリームの全体）に中身があるか。"""
+    for c in event.get("choices") or []:
+        part = c.get("delta") or c.get("message") or {}
+        if part.get("content") or part.get("tool_calls") or part.get("reasoning"):
+            return True
+    return False
+
+
 def make_handler(upstream: str, think: bool, top_p: float | None, model: str | None = None):
     up = urllib.parse.urlparse(upstream)
+    # reasoning_effort を付けると何も返さなくなるモデル（考えるモードの無いロールプレイ用モデルなど）
+    no_effort_models: set[str] = set()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -62,55 +73,123 @@ def make_handler(upstream: str, think: bool, top_p: float | None, model: str | N
         def log_message(self, fmt, *args):
             log.debug("%s - %s", self.address_string(), fmt % args)
 
-        def _forward(self):
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length) if length else b""
-            path = urllib.parse.urlparse(self.path).path
-            if self.command == "POST" and path.rstrip("/").endswith("/chat/completions"):
-                body = rewrite_chat_request(body, think, top_p)
-            if self.command == "POST" and path.rstrip("/") in ("/v1/chat/completions", "/api/chat", "/api/generate"):
-                body = rewrite_model(body, model)
-
+        def _open(self, body: bytes):
             headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
             if body or self.command in ("POST", "PUT", "PATCH"):
                 headers["Content-Length"] = str(len(body))
             conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=600)
-            try:
-                conn.request(self.command, self.path, body=body or None, headers=headers)
-                res = conn.getresponse()
-            except OSError as e:
-                msg = json.dumps({"error": {"message": f"Ollama ({upstream}) に接続できません: {e}"}}, ensure_ascii=False).encode()
-                self.send_response(502)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(msg)))
-                self.end_headers()
-                self.wfile.write(msg)
-                return
+            conn.request(self.command, self.path, body=body or None, headers=headers)
+            return conn, conn.getresponse()
 
+        def _start(self, res, chunked: bool = True):
             self.send_response(res.status, res.reason)
             for k, v in res.getheaders():
                 if k.lower() not in HOP_HEADERS:
                     self.send_header(k, v)
-            if self.command == "HEAD" or res.status in (204, 304):
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                conn.close()
-                return
-            # ストリーミングをそのまま流すため、chunked で中継する
-            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Transfer-Encoding", "chunked") if chunked else self.send_header("Content-Length", "0")
             self.end_headers()
+
+        def _chunk(self, data: bytes):
+            if data:
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
+                self.wfile.flush()
+
+        def _pipe(self, res):
+            """残りをそのまま流す（ストリーミングを保つため chunked で中継する）"""
+            while True:
+                chunk = res.read1(65536) if hasattr(res, "read1") else res.read(65536)
+                if not chunk:
+                    break
+                self._chunk(chunk)
+            self.wfile.write(b"0\r\n\r\n")
+
+        def _try_chat(self, body: bytes, injected: bool, model_name: str, stream: bool) -> bool:
+            """チャットを 1 回試す。reasoning_effort を付けたせいで空っぽだったら False（まだ何も返していない）。"""
+            conn, res = self._open(body)
             try:
+                if res.status != 200 or not injected:
+                    self._start(res)
+                    self._pipe(res)
+                    return True
+                if not stream:
+                    data = res.read()
+                    try:
+                        empty = not _has_answer(json.loads(data))
+                    except ValueError:
+                        empty = False
+                    if empty:
+                        return False
+                    self._start(res)
+                    self._chunk(data)
+                    self.wfile.write(b"0\r\n\r\n")
+                    return True
+                # ストリーム: 中身のある最初のイベントが来るまで溜めておき、来たら流し始める
+                buffered = []
                 while True:
-                    chunk = res.read1(65536) if hasattr(res, "read1") else res.read(65536)
-                    if not chunk:
-                        break
-                    self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
-                    self.wfile.flush()
-                self.wfile.write(b"0\r\n\r\n")
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # 割り込みなどでクライアントが切った
+                    line = res.readline()
+                    if not line:
+                        return False  # 中身なしで終わった
+                    buffered.append(line)
+                    text = line.strip()
+                    if text == b"data: [DONE]":
+                        return False
+                    if text.startswith(b"data:"):
+                        try:
+                            if _has_answer(json.loads(text[5:])):
+                                break
+                        except ValueError:
+                            break
+                self._start(res)
+                self._chunk(b"".join(buffered))
+                self._pipe(res)
+                return True
             finally:
                 conn.close()
+
+        def _forward(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            path = urllib.parse.urlparse(self.path).path.rstrip("/")
+            if self.command == "POST" and path in ("/v1/chat/completions", "/api/chat", "/api/generate"):
+                body = rewrite_model(body, model)
+            try:
+                if self.command == "POST" and path.endswith("/chat/completions"):
+                    try:
+                        req = json.loads(body)
+                    except ValueError:
+                        req = {}
+                    name = str(req.get("model", ""))
+                    use_effort = not think and name not in no_effort_models
+                    first = rewrite_chat_request(body, not use_effort, top_p)
+                    injected = use_effort and b"reasoning_effort" in first and "reasoning_effort" not in req
+                    if self._try_chat(first, injected, name, bool(req.get("stream"))):
+                        return
+                    # 「考えるモードなし」の指定を外してやり直す。次からこのモデルには付けない
+                    log.warning("%s は考えるモードの指定を付けると返事が空になるので、指定を外して聞き直します", name)
+                    no_effort_models.add(name)
+                    self._try_chat(rewrite_chat_request(body, True, top_p), False, name, bool(req.get("stream")))
+                    return
+                conn, res = self._open(body)
+                try:
+                    if self.command == "HEAD" or res.status in (204, 304):
+                        self._start(res, chunked=False)
+                        return
+                    self._start(res)
+                    self._pipe(res)
+                finally:
+                    conn.close()
+            except OSError as e:
+                if isinstance(e, (BrokenPipeError, ConnectionResetError)):
+                    return  # 割り込みなどでクライアントが切った
+                msg = json.dumps({"error": {"message": f"Ollama ({upstream}) に接続できません: {e}"}}, ensure_ascii=False).encode()
+                try:
+                    self.send_response(502)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(msg)))
+                    self.end_headers()
+                    self.wfile.write(msg)
+                except OSError:
+                    pass
 
         do_GET = do_POST = do_DELETE = do_PUT = do_HEAD = _forward
 
