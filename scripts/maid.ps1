@@ -12,6 +12,7 @@
 #   maid.bat doctor           起動中に、返事が来ない・声が出ないなどの原因を調べる
 #   maid.bat logs <名前>      裏の部品のログを別ウィンドウで見る（ollama / bridge / aivisspeech など）
 #   maid.bat stop             裏に残っている maid の部品を全部止める
+#   maid.bat clean            ログと一時ファイルを消す（-History で会話の履歴も）
 #   maid.bat models           取得済みの頭脳のモデル一覧
 #   maid.bat remove-model <名前>  頭脳のモデルを消す
 
@@ -23,7 +24,8 @@ param(
     [double]$Speed = 0,
     [switch]$AivisGpu,               # AivisSpeech を GPU (DirectML) で動かす（VRAM を食う）
     [switch]$NoDiscordGate,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$History                 # clean で会話の履歴も消す
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,7 +46,7 @@ $P = @{
 # --- いつも使う設定（maid.settings.json。無ければ作る。コマンドの -Model などが優先） ---
 $SettingsPath = Join-Path $Root "maid.settings.json"
 if (-not (Test-Path $SettingsPath)) {
-    $default = "{`n  `"model`": `"qwen3:8b`",`n  `"voice`": `"コハク/あまあま`",`n  `"speed`": 1.0,`n  `"asr_language`": `"ja`"`n}`n"
+    $default = "{`n  `"model`": `"qwen3:8b`",`n  `"voice`": `"コハク/あまあま`",`n  `"speed`": 1.0,`n  `"asr`": `"reazonspeech`",`n  `"asr_language`": `"ja`"`n}`n"
     [IO.File]::WriteAllText($SettingsPath, $default, (New-Object Text.UTF8Encoding $false))
 }
 $Settings = [IO.File]::ReadAllText($SettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
@@ -53,6 +55,8 @@ if (-not $Voice) { $Voice = if ($Settings.voice) { [string]$Settings.voice } els
 if ($Speed -le 0) { $Speed = if ($Settings.speed) { [double]$Settings.speed } else { 1.0 } }
 # 音声認識の言語（ja / auto / en / zh / ko / yue）。自動判定だと短い発話を韓国語などと間違えるので既定は ja
 $AsrLanguage = if ($Settings.asr_language) { [string]$Settings.asr_language } else { "ja" }
+# 音声認識のエンジン: reazonspeech（日本語専用・おすすめ）/ sensevoice（多言語。asr_language はこちら用）
+$AsrEngine = if ($Settings.asr) { [string]$Settings.asr } else { "reazonspeech" }
 
 $OlvTag = "v1.2.1"
 $OlvFrontendCommit = "06a659b114fff788cf0daaa86e484576db4975bf"   # v1.2.1 が参照しているビルド済み画面
@@ -346,6 +350,41 @@ function Write-FrontendDefaults([string]$WsUrl) {
 }
 
 # Open-LLM-VTuber v1.2.1 は SenseVoice の言語を設定できないので、言語指定の 1 行を足す（何度実行しても同じ結果）
+# 日本語専用の音声認識モデル（ReazonSpeech, sherpa-onnx 版）。int8 版の 3 ファイルと tokens だけ取り出す（約 170MB）
+$ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"
+function Install-ReazonSpeech {
+    $dir = "$($P.Olv)\models\$ReazonName"
+    if (Test-Path "$dir\encoder-epoch-99-avg-1.int8.onnx") { return }
+    Say "  日本語の音声認識モデル (ReazonSpeech) をダウンロードします（約 700MB、初回だけ）" Cyan
+    $archive = "$($P.Downloads)\$ReazonName.tar.bz2"
+    Get-File "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$ReazonName.tar.bz2" $archive
+    $py = @"
+import sys, tarfile, os
+archive, dest = sys.argv[1], sys.argv[2]
+want = ("encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.int8.onnx", "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt")
+os.makedirs(dest, exist_ok=True)
+with tarfile.open(archive, "r:bz2") as t:
+    for m in t:
+        name = os.path.basename(m.name)
+        if m.isfile() and name in want:
+            with t.extractfile(m) as src, open(os.path.join(dest, name), "wb") as out:
+                out.write(src.read())
+print("展開しました:", dest)
+"@
+    $pyFile = "$($P.Downloads)\extract_reazon.py"
+    [IO.File]::WriteAllText($pyFile, $py, (New-Object Text.UTF8Encoding $false))
+    Invoke-UvPython @($pyFile, $archive, $dir)
+    if (-not (Test-Path "$dir\encoder-epoch-99-avg-1.int8.onnx")) { throw "音声認識モデルの展開に失敗しました。" }
+    Remove-Item -Force $archive, $pyFile -ErrorAction SilentlyContinue   # 使うのは展開したものだけ
+}
+
+# conf.yaml の音声認識の部分だけを maid.settings.json の asr に合わせる（キャラ設定などには触らない）
+function Set-OlvAsr {
+    if ($AsrEngine -eq "reazonspeech") { Install-ReazonSpeech }
+    & $P.Uv run --project $P.Olv python "$Root\scripts\olv_asr.py" "$($P.Olv)\conf.yaml" --engine $AsrEngine
+    if ($LASTEXITCODE -ne 0) { Say "  音声認識の設定を書き換えられませんでした（今の設定のまま起動します）" Yellow }
+}
+
 function Set-OlvPatches {
     $f = "$($P.Olv)\src\open_llm_vtuber\asr\sherpa_onnx_asr.py"
     if (-not (Test-Path $f)) { return }
@@ -398,6 +437,7 @@ function Invoke-Start {
     $direct = "ws://127.0.0.1:12393/client-ws"
     Write-FrontendDefaults $direct
     Set-OlvPatches
+    Set-OlvAsr
 
     Say "Open-LLM-VTuber (12393)" Cyan
     if (-not (Test-Port 12393)) {
@@ -423,7 +463,8 @@ function Invoke-Start {
     } catch {
         Say "  画面の初期設定 (maid-defaults.js) が配信されていません。マイク設定は画面から手で変えてください。" Yellow
     }
-    Say "  頭脳: $Model / 声: $Voice / 音声認識: $AsrLanguage" Gray
+    $asrLabel = if ($AsrEngine -eq "sensevoice") { "sensevoice ($AsrLanguage)" } else { $AsrEngine }
+    Say "  頭脳: $Model / 声: $Voice / 音声認識: $asrLabel" Gray
     if (-not $NoBrowser) {
         # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）。
         # 末尾の ?t= は、Edge が古いページを使い回さないようにするため
@@ -437,7 +478,8 @@ function Invoke-Start {
         Say "Open-LLM-VTuber が終了しました。" Yellow
     } finally {
         $n = Stop-Maid
-        Say "裏の部品を止めました ($n 個)" Gray
+        # 数はプログラムの個数（uv とその中の python、Ollama とその中の llama-server など）。Ctrl+C で先に止まった分は数えないので毎回変わる
+        Say "残っていたプログラムを止めました ($n 個)" Gray
     }
 }
 
@@ -526,6 +568,26 @@ switch ($Command) {
         if ($LASTEXITCODE -ne 0) { throw "追加に失敗しました。URL を確認してください。" }
         Say "追加しました。ブリッジ起動中なら http://127.0.0.1:10102/v1/voices で名前を確認できます。" Green
     }
+    "clean" {
+        if (Test-Port 12393) { throw "動いている間は消せないファイルがあります。先に .\maid.bat stop を実行してください。" }
+        $targets = @("$LogDir", "$($P.Olv)\logs", "$($P.Olv)\cache")
+        if ($History) {
+            Say "会話の履歴（$($P.Olv)\chat_history）も全部消します。元に戻せません。" Yellow
+            if ((Read-Host "消してよければ yes と入力") -ne "yes") { Say "やめました" Gray; return }
+            $targets += "$($P.Olv)\chat_history"
+        }
+        $bytes = 0
+        foreach ($t in $targets) {
+            if (-not (Test-Path $t)) { continue }
+            Get-ChildItem $t -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                $len = $_.Length
+                try { Remove-Item -Force $_.FullName -ErrorAction Stop; $bytes += $len } catch {}
+            }
+        }
+        Remove-Item -Force "$($P.Olv)\conf.yaml.backup" -ErrorAction SilentlyContinue
+        Say ("消しました（{0:N1} MB）" -f ($bytes / 1MB)) Green
+        if (-not $History) { Say "会話の履歴も消すときは .\maid.bat clean -History" Gray }
+    }
     "stop" {
         $n = Stop-Maid
         Say "止めました ($n 個)" Green
@@ -555,6 +617,6 @@ switch ($Command) {
     }
     "discord-check" { Invoke-UvPython @("$Root\gate\discord_gate.py", "--check") @("websockets>=13") }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 17 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -First 18 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }

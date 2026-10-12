@@ -78,6 +78,7 @@ maid.bat check
   "model": "qwen3:8b",
   "voice": "コハク/あまあま",
   "speed": 1.0,
+  "asr": "reazonspeech",
   "asr_language": "ja"
 }
 ```
@@ -87,7 +88,8 @@ maid.bat check
 | model | 頭脳のモデル（Ollama の名前）。conf.yaml ではなくこちらが使われます |
 | voice | 声（「話者名/スタイル名」かスタイル ID）。一覧は起動中に <http://127.0.0.1:10102/v1/voices> |
 | speed | 話す速さ（1.0 が標準） |
-| asr_language | 音声認識の言語。`ja`（日本語固定・おすすめ）か `auto`（自動判定。短い発話を韓国語などと間違えやすい） |
+| asr | 音声認識のエンジン。`reazonspeech`（日本語専用・おすすめ。初回起動時に約 700MB ダウンロード）か `sensevoice`（多言語） |
+| asr_language | `sensevoice` のときの言語。`ja`（日本語固定）か `auto`（自動判定。短い発話を韓国語などと間違えやすい） |
 
 変えたら `.\maid.bat stop` → `.\start.bat` で反映されます。
 
@@ -235,6 +237,8 @@ maid.bat bench qwen3:8b,qwen3:4b
 | `runtime\logs\` | 古い版の maid のログ | OK（今は使っていない） |
 | `runtime\downloads\` | setup でダウンロードしたファイル | OK（setup をやり直すときにまたダウンロードする） |
 | `runtime\Open-LLM-VTuber\chat_history\` | **会話の履歴** | 消すと過去の会話が消える。記憶機能（Phase 3）でも使う予定 |
+
+まとめて消すときは、止めてから `.\maid.bat clean`（ログと一時ファイル）。会話の履歴も消すときは `.\maid.bat clean -History`（確認あり）。
 
 
 | 症状 | 確認すること |
