@@ -9,7 +9,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
 import llm_proxy  # noqa: E402
 
 

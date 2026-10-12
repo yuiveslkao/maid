@@ -15,7 +15,7 @@ try:
 except ImportError:  # pragma: no cover
     connect = None
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gate"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
 
 
 @unittest.skipIf(connect is None, "websockets なし")

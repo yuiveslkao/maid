@@ -47,7 +47,7 @@ character_config:
   # If you want to create multiple characters and switch between them,
   #   add characters in characters folder
   # [maid] 性格・口調はここを書き換える。応答速度のため「短く話す」指示は残すのがおすすめ。
-  #   「考えてから答える」モードは maid の頭脳の中継 (bridge/llm_proxy.py) が切るので、ここに書く必要はない。
+  #   「考えてから答える」モードは maid の頭脳の中継 (services/llm_proxy.py) が切るので、ここに書く必要はない。
   persona_prompt: |
     あなたは「メイド」という名前の、ご主人様専属のアシスタントです。
     （ここに性格・口調・一人称・関係性などを書いてください）
@@ -145,7 +145,7 @@ character_config:
       ollama_llm:
         base_url: 'http://localhost:11434/v1' # [maid] 11434 は maid の「頭脳の中継」（本物の Ollama は 11436）
         # [maid] `ollama list` に出る名前を書く。8GB VRAM なら 7〜9B の Q4 量子化が上限の目安
-        model: 'qwen3:8b'
+        model: 'qwen3:8b' # [maid] 実際に使うモデルは maid.settings.json の model（頭脳の中継がすり替える）
         temperature: 0.7 # [maid] Qwen3 の推奨値（考えるモードなし）
         # seconds to keep the model in memory after inactivity. 
         # set to -1 to keep the model in memory forever (even after exiting open llm vtuber)
@@ -190,7 +190,7 @@ character_config:
   # === Automatic Speech Recognition ===
   asr_config:
     # speech to text model options: 'faster_whisper', 'whisper_cpp', 'whisper', 'azure_asr', 'fun_asr', 'groq_whisper_asr', 'sherpa_onnx_asr'
-    asr_model: 'sherpa_onnx_asr' # [maid] SenseVoice を CPU で動かし、GPU は LLM に空ける
+    asr_model: 'sherpa_onnx_asr' # [maid] 音声認識は CPU で動かし、GPU は LLM に空ける。中身は maid.settings.json の asr に合わせて起動時に書き換える
 
     azure_asr:
       api_key: 'azure_api_key'
@@ -286,7 +286,7 @@ character_config:
 
   # =================== Text to Speech ===================
   tts_config:
-    tts_model: 'openai_tts' # [maid] bridge/aivis_openai_bridge.py 経由で AivisSpeech を使う
+    tts_model: 'openai_tts' # [maid] services/tts_bridge.py 経由で AivisSpeech を使う
     # text to speech model options:
     #   'azure_tts', 'pyttsx3_tts', 'edge_tts', 'bark_tts',
     #   'cosyvoice_tts', 'melo_tts', 'coqui_tts',

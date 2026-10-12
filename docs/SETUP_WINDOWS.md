@@ -1,9 +1,9 @@
-# Phase 1 セットアップ（Windows・完全ローカル）
+# セットアップと使い方（Windows・完全ローカル）
 
 ゴール: **ネットに何も出さずに、マイクで話しかけるとキャラが AivisSpeech の声で返事をする**状態にする。
 
 ```
-マイク ──▶ 画面 ──▶ Discord ゲート (12394) ──▶ [Open-LLM-VTuber (12393)]  VAD（話し始め/終わり検出）→ SenseVoice（文字起こし, CPU）
+マイク ──▶ 画面 ──▶ Discord ゲート (12394) ──▶ [Open-LLM-VTuber (12393)]  VAD（話し始め/終わり検出）→ ReazonSpeech（文字起こし, CPU）
                 │
                 ├─▶ Ollama（頭脳, GPU） ── 文ごとにストリーミング
                 │
@@ -50,7 +50,7 @@ GitHub のこのリポジトリのページで、ブランチ `claude/stoic-davi
 | AivisSpeech Engine（エンジンだけ） | 声 | 約 1〜2GB |
 | 7zr.exe | AivisSpeech の展開用（7-Zip 公式の単体版） | 1MB 未満 |
 | Open-LLM-VTuber v1.2.1 ＋ 画面 | 基盤 | 数 GB（ライブラリ込み） |
-| 頭脳のモデル（qwen3:8b） | — | 約 5GB |
+| 頭脳のモデル（maid.settings.json の model） | — | 約 5GB |
 
 - 何度実行しても大丈夫です（そろっているものは飛ばします）。途中で失敗したらもう一度実行してください。
 - 別のモデルにしたいときは `maid.bat setup -Model qwen3:4b` のように指定します。
@@ -71,11 +71,11 @@ maid.bat check
 
 ## 4. いつも使う設定（maid.settings.json）
 
-初めて `maid.bat` を動かすと、maid フォルダに `maid.settings.json` ができます。メモ帳で書き換えられます。
+初めて `maid.bat` を動かすと、maid フォルダに `maid.settings.json` ができます（`config\maid.settings.default.json` のコピー）。メモ帳で書き換えられます。書いていない項目は既定値が使われます。
 
 ```json
 {
-  "model": "qwen3:8b",
+  "model": "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_K_M",
   "voice": "コハク/あまあま",
   "speed": 1.0,
   "silence_ms": 900,
@@ -98,7 +98,7 @@ maid.bat check
 ### 頭脳のモデルを変える
 
 1. 取得する: `.\maid.bat setup -Model <名前>`（例: `huihui_ai/qwen3.5-abliterated:9b`）
-2. 比べる（start.bat で起動中に）: `.\maid.bat bench qwen3:8b,<名前>`
+2. 比べる（start.bat で起動中に）: `.\maid.bat bench <今のモデル>,<名前>`
    - 「メモリ: ○GB のうち GPU 100%」になっていれば全部 GPU に載っています。100% 未満だと一部が CPU で動いて遅くなります。
 3. 気に入ったら `maid.settings.json` の `model` を書き換える。
 
@@ -120,11 +120,11 @@ maid.bat check
 | ollama | 頭脳（本物の Ollama, 127.0.0.1:11436） |
 | brain-proxy | 頭脳の中継（127.0.0.1:11434）。「考えてから答える」モードを切って返事を速くする |
 | aivisspeech | 声 |
-| bridge | 声の中継 |
+| tts-bridge | 声の中継 |
 | discord-gate | Discord 通話中は声に反応しないようにする中継 |
 | open-llm-vtuber | 本体 |
 
-ログを見たいときは `.\maid.bat logs <名前>`（例: `.\maid.bat logs bridge`）。別ウィンドウで流れ続けます。
+ログを見たいときは `.\maid.bat logs <名前>`（例: `.\maid.bat logs tts-bridge`）。別ウィンドウで流れ続けます。
 
 > 以前の版のように部品をコンソールウィンドウで動かすと、ウィンドウをクリックして「選択」状態になった瞬間に
 > その部品が止まってしまう（Windows の仕様）ため、この形にしています。ログ表示用のウィンドウは選択しても大丈夫です。
@@ -167,7 +167,7 @@ maid.bat start -NoBrowser
 > Open-LLM-VTuber v1.2.1 の画面には、設定画面を開いて閉じるとマイク設定が「止める」に戻ってしまう不具合があるため、
 > maid が画面のファイルの初期値も直しています。
 
-Live2D のモデル（初期は Mao）は表示されますが、Phase 1 では気にせず進めてください。
+Live2D のモデル（初期は Mao）が表示されます（独自の画面は今後の予定）。
 
 > 雑音対策をもっとしたい場合: RTX 3060 Ti は **NVIDIA Broadcast** のノイズ除去が使えます（マイクを「NVIDIA Broadcast」の仮想マイクに切り替える）。
 > ただし別途インストールが必要で、GPU も少し使います。まずは VAD のしきい値調整で足りるか試してください。
@@ -194,7 +194,7 @@ start.bat で起動している状態で、別のウィンドウから:
 
 ```bat
 maid.bat bench
-maid.bat bench qwen3:8b,qwen3:4b
+maid.bat bench <モデルA>,<モデルB>
 ```
 
 （比べるモデルは先に `maid.bat setup -Model qwen3:4b` で取得しておく）

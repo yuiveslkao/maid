@@ -6,8 +6,8 @@ Open-LLM-VTuber 本体を改造しないので、本体のアップデートに�
 
 標準ライブラリだけで動く（pip install 不要）。
 
-    python bridge/aivis_openai_bridge.py
-    python bridge/aivis_openai_bridge.py --voice "話者名/ノーマル" --speed 1.1
+    python services/tts_bridge.py
+    python services/tts_bridge.py --voice "話者名/ノーマル" --speed 1.1
 
 エンドポイント:
     POST /v1/audio/speech   {"input": "...", "voice": "<スタイルID | 話者名 | 話者名/スタイル名 | default>", "speed": 1.0}

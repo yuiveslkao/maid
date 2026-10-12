@@ -13,8 +13,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge"))
-import aivis_openai_bridge as bridge  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
+import tts_bridge as bridge  # noqa: E402
 
 SPEAKERS = [
     {"name": "まい", "styles": [{"id": 100, "name": "ノーマル"}, {"id": 101, "name": "あまあま"}]},

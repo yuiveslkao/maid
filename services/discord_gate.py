@@ -4,8 +4,8 @@
 WebSocket を中継し、Discord がマイクを使っている間だけ「マイク音声」と「自発発話の合図」を
 本体に渡さない。チャット入力はそのまま通す。本体は改造しない。
 
-    uv run --no-project --with "websockets>=13" python gate/discord_gate.py
-    uv run --no-project --with "websockets>=13" python gate/discord_gate.py --check   # 判定だけ確認
+    uv run --no-project --with "websockets>=13" python services/discord_gate.py
+    uv run --no-project --with "websockets>=13" python services/discord_gate.py --check   # 判定だけ確認
 
 画面の設定で WebSocket URL を ws://127.0.0.1:12394/client-ws に変える（Base URL はそのまま）。
 

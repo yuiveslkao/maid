@@ -9,7 +9,7 @@
 
 それ以外のリクエスト（/api/... など）はそのまま Ollama に渡す。標準ライブラリだけで動く。
 
-    python bridge/llm_proxy.py --port 11434 --ollama http://127.0.0.1:11436
+    python services/llm_proxy.py --port 11434 --ollama http://127.0.0.1:11436
 """
 
 from __future__ import annotations
