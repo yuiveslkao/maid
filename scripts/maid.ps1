@@ -46,7 +46,7 @@ $P = @{
 # --- いつも使う設定（maid.settings.json。無ければ作る。コマンドの -Model などが優先） ---
 $SettingsPath = Join-Path $Root "maid.settings.json"
 if (-not (Test-Path $SettingsPath)) {
-    $default = "{`n  `"model`": `"qwen3:8b`",`n  `"voice`": `"コハク/あまあま`",`n  `"speed`": 1.0,`n  `"asr`": `"reazonspeech`",`n  `"asr_language`": `"ja`"`n}`n"
+    $default = "{`n  `"model`": `"qwen3:8b`",`n  `"voice`": `"コハク/あまあま`",`n  `"speed`": 1.0,`n  `"silence_ms`": 900,`n  `"asr`": `"reazonspeech`",`n  `"asr_language`": `"ja`"`n}`n"
     [IO.File]::WriteAllText($SettingsPath, $default, (New-Object Text.UTF8Encoding $false))
 }
 $Settings = [IO.File]::ReadAllText($SettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
@@ -55,6 +55,9 @@ if (-not $Voice) { $Voice = if ($Settings.voice) { [string]$Settings.voice } els
 if ($Speed -le 0) { $Speed = if ($Settings.speed) { [double]$Settings.speed } else { 1.0 } }
 # 音声認識の言語（ja / auto / en / zh / ko / yue）。自動判定だと短い発話を韓国語などと間違えるので既定は ja
 $AsrLanguage = if ($Settings.asr_language) { [string]$Settings.asr_language } else { "ja" }
+# 話し終わりの判定: 無音がこの長さ続いたら AI に送る（ミリ秒）。短いと速いが、言いかけで切られやすい
+$SilenceMs = if ($Settings.silence_ms) { [int]$Settings.silence_ms } else { 900 }
+$RedemptionFrames = [math]::Max(3, [math]::Round($SilenceMs / 32))   # 画面側は 1 フレーム ≒ 32ms
 # 音声認識のエンジン: reazonspeech（日本語専用・おすすめ）/ sensevoice（多言語。asr_language はこちら用）
 $AsrEngine = if ($Settings.asr) { [string]$Settings.asr } else { "reazonspeech" }
 
@@ -330,23 +333,40 @@ function Write-FrontendDefaults([string]$WsUrl) {
     var ls = window.localStorage;
     ls.setItem("wsUrl", JSON.stringify("$WsUrl"));
     ls.setItem("baseUrl", JSON.stringify("http://127.0.0.1:12393"));
-    if (ls.getItem("maidDefaults") !== "2") {
-      ls.setItem("micOn", "true");
-      ls.setItem("autoStopMic", "false");            // 話している途中でも割り込めるように
-      ls.setItem("autoStartMicOn", "true");          // 割り込んだあともマイクを戻す
-      ls.setItem("autoStartMicOnConvEnd", "true");   // 返事が終わったらマイクを戻す（毎回クリック不要）
-      ls.setItem("vadSettings", JSON.stringify({ positiveSpeechThreshold: 50, negativeSpeechThreshold: 35, redemptionFrames: 14 }));
-      ls.setItem("maidDefaults", "2");
-    }
+    // マイクは止めない（毎回入れ直す。画面の設定を開いて閉じると古い値で上書きされる不具合があるため）
+    ls.setItem("micOn", "true");
+    ls.setItem("autoStopMic", "false");            // 話し終わっても・キャラが話していてもマイクを止めない
+    ls.setItem("autoStartMicOn", "true");          // 割り込んだあともマイクを戻す
+    ls.setItem("autoStartMicOnConvEnd", "true");   // 返事が終わったらマイクを戻す
+    // 話し終わりの判定: 無音が続いたら送る時間（maid.settings.json の silence_ms）。感度は画面で変えた値を残す
+    var vad = {};
+    try { vad = JSON.parse(ls.getItem("vadSettings") || "{}") || {}; } catch (e) {}
+    if (typeof vad.positiveSpeechThreshold !== "number") vad.positiveSpeechThreshold = 50;
+    if (typeof vad.negativeSpeechThreshold !== "number") vad.negativeSpeechThreshold = 35;
+    vad.redemptionFrames = $RedemptionFrames;
+    ls.setItem("vadSettings", JSON.stringify(vad));
   } catch (e) {}
 })();
 "@
     [IO.File]::WriteAllText("$front\maid-defaults.js", $js, (New-Object Text.UTF8Encoding $false))
     $html = [IO.File]::ReadAllText($index)
+    $orig = $html
     if ($html -notmatch "maid-defaults\.js") {
         $html = $html -replace "<head>", "<head>`n    <script src=`"./maid-defaults.js`"></script>"
-        [IO.File]::WriteAllText($index, $html, (New-Object Text.UTF8Encoding $false))
     }
+    # 画面の本体 (assets/main-*.js) の、マイク設定の初期値を「止めない」に直す。
+    # 初期値が「止める」のままだと、設定画面を閉じたときにその値で上書き保存されてしまう
+    $bundle = Get-ChildItem "$front\assets\main-*.js" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($bundle) {
+        $code = [IO.File]::ReadAllText($bundle.FullName)
+        $fixed = $code.Replace('useRef(!0),[st,it]=useLocalStorage("autoStopMic"', 'useRef(!1),[st,it]=useLocalStorage("autoStopMic"').
+            Replace('useRef(!1),[at,lt]=useLocalStorage("autoStartMicOnConvEnd"', 'useRef(!0),[at,lt]=useLocalStorage("autoStartMicOnConvEnd"').
+            Replace('ut=reactExports.useRef(!1),[,ct]=reactExports.useReducer', 'ut=reactExports.useRef(!0),[,ct]=reactExports.useReducer')
+        if ($fixed -ne $code) { [IO.File]::WriteAllText($bundle.FullName, $fixed, (New-Object Text.UTF8Encoding $false)) }
+        # 書き換えた本体を Edge が古いまま使い回さないよう、読み込む URL に印を付ける
+        $html = [regex]::Replace($html, '(assets/main-[A-Za-z0-9_-]+\.js)(\?maid=\d+)?"', '$1?maid=3"')
+    }
+    if ($html -ne $orig) { [IO.File]::WriteAllText($index, $html, (New-Object Text.UTF8Encoding $false)) }
 }
 
 # Open-LLM-VTuber v1.2.1 は SenseVoice の言語を設定できないので、言語指定の 1 行を足す（何度実行しても同じ結果）

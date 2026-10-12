@@ -40,6 +40,22 @@ class FakeOllama(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(out)
             return
+        if self.path == "/v1/chat/completions" and body.get("model") == "loop-model":
+            # 壊れたように同じ言葉を繰り返し続けるモデル
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for t in ["えっとね、"] + ["ぱぱ、"] * 200:
+                    self.wfile.write(f"data: {json.dumps({'choices': [{'delta': {'content': t}}]}, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+                    time.sleep(0.005)
+                FakeOllama.loop_finished = True
+            except (BrokenPipeError, ConnectionResetError):
+                FakeOllama.loop_finished = False  # 中継が接続を切って生成を止めた
+            self.close_connection = True
+            return
         if self.path == "/v1/chat/completions" and not body.get("stream"):
             out = json.dumps({"choices": [{"message": {"role": "assistant", "content": "はい"}}]}).encode()
             self.send_response(200)
@@ -101,8 +117,10 @@ class ProxyTest(unittest.TestCase):
     def test_rewrite_rules(self):
         r = json.loads(llm_proxy.rewrite_chat_request(b'{"model":"m","top_p":0.5}', think=False, top_p=0.8))
         self.assertEqual((r["reasoning_effort"], r["top_p"]), ("none", 0.5))
-        r = json.loads(llm_proxy.rewrite_chat_request(b'{"reasoning_effort":"high"}', think=False, top_p=None))
+        r = json.loads(llm_proxy.rewrite_chat_request(b'{"reasoning_effort":"high"}', think=False, top_p=None, defaults={}))
         self.assertEqual(r, {"reasoning_effort": "high"})
+        r = json.loads(llm_proxy.rewrite_chat_request(b'{"max_tokens":50}', think=True, top_p=None))
+        self.assertEqual((r["max_tokens"], r["presence_penalty"]), (50, 0.5))
         r = json.loads(llm_proxy.rewrite_chat_request(b'{"model":"m"}', think=True, top_p=None))
         self.assertNotIn("reasoning_effort", r)
         self.assertEqual(llm_proxy.rewrite_chat_request(b"not json", False, 0.8), b"not json")
@@ -136,6 +154,23 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(efforts, ["none", None, None])
         r = client.chat.completions.create(model="normal", stream=False, messages=[{"role": "user", "content": "やあ"}])
         self.assertEqual(r.choices[0].message.content, "はい")
+
+    def test_loop_is_cut(self):
+        self.assertTrue(llm_proxy.is_looping("えっと" + "ぱぱ、" * 8))
+        self.assertFalse(llm_proxy.is_looping("うん、わかった！ぱぱ、だいすき。"))
+        try:
+            from openai import OpenAI
+        except ImportError:
+            self.skipTest("openai パッケージなし")
+        client = OpenAI(api_key="x", base_url=self.base + "/v1")
+        stream = client.chat.completions.create(model="loop-model", stream=True, messages=[{"role": "user", "content": "やあ"}])
+        chunks = list(stream)
+        text = "".join((c.choices[0].delta.content or "") for c in chunks)
+        self.assertTrue(text.startswith("えっとね、ぱぱ、"))
+        self.assertLess(len(text), 60)
+        self.assertEqual(chunks[-1].choices[0].finish_reason, "stop")
+        time.sleep(0.3)
+        self.assertFalse(FakeOllama.loop_finished)
 
     def test_other_paths_pass_through(self):
         req = urllib.request.Request(self.base + "/api/chat", data=json.dumps({"model": "m", "keep_alive": -1}).encode(),

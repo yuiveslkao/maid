@@ -78,6 +78,7 @@ maid.bat check
   "model": "qwen3:8b",
   "voice": "コハク/あまあま",
   "speed": 1.0,
+  "silence_ms": 900,
   "asr": "reazonspeech",
   "asr_language": "ja"
 }
@@ -88,6 +89,7 @@ maid.bat check
 | model | 頭脳のモデル（Ollama の名前）。conf.yaml ではなくこちらが使われます |
 | voice | 声（「話者名/スタイル名」かスタイル ID）。一覧は起動中に <http://127.0.0.1:10102/v1/voices> |
 | speed | 話す速さ（1.0 が標準） |
+| silence_ms | 話し終わりの判定。無音がこの時間（ミリ秒）続いたら AI に送る。短いほど返事が速いが、言いかけで切られやすい（900 前後がおすすめ） |
 | asr | 音声認識のエンジン。`reazonspeech`（日本語専用・おすすめ。初回起動時に約 700MB ダウンロード）か `sensevoice`（多言語） |
 | asr_language | `sensevoice` のときの言語。`ja`（日本語固定）か `auto`（自動判定。短い発話を韓国語などと間違えやすい） |
 
@@ -155,19 +157,15 @@ maid.bat start -NoBrowser
 
 ## 7. 画面の設定
 
-**次の設定は maid が自動で入れるので、何もしなくて大丈夫です。**
+**画面の設定は maid が起動のたびに入れるので、何もしなくて大丈夫です。**
 
-- WebSocket URL: Discord ゲートが正常に動いていればゲート（12394）、だめなら本体に直結（12393）。起動のたびに maid が決めます。
-- マイク・VAD の初期値（下の表）: 最初の 1 回だけ入れます。あとで画面から変えた値はそのまま残ります。
+- WebSocket URL: Discord ゲートが正常に動いていればゲート（12394）、だめなら本体に直結（12393）
+- マイク: 常に ON のまま（話し終わっても、キャラが話していても止めない。割り込みもできる）
+- 話し終わりの判定（Redemption Frames）: `maid.settings.json` の `silence_ms` から計算
+- 物音で反応しすぎるときは、画面の「Speech Prob Threshold」を 50 → 60〜70 に上げる（この値は画面で変えたものが残ります）
 
-| 設定（英語表記） | おすすめ | 理由 |
-|---|---|---|
-| マイク | 常時 ON | ミュートはマイクの物理ボタンで行う |
-| Auto Stop Mic When AI Start Speaking | **OFF** | OFF にしておくと、キャラが話している途中に話しかけて割り込める（ヘッドホンなので自分の声だけに反応する） |
-| Auto Start Mic When AI Interrupted / When Conversation End | ON | 割り込み後や会話後もマイクが待受に戻る |
-| **Redemption Frames** | **35 → 14** | **話し終わり判定の待ち時間**。1 フレーム ≒ 32ms なので初期値 35 は約 1.1 秒待つ。12〜15（約 0.4〜0.5 秒）にすると返事が大きく速くなる。言いかけで切られるなら少し戻す |
-| Speech Prob Threshold | 50 → 雑音で反応するなら 60〜70 | 物音・キーボード音で反応しにくくなる |
-| Allow AI to Speak Proactively / Idle seconds | 好みで | 指定秒数黙っているとキャラから話しかけてくる |
+> Open-LLM-VTuber v1.2.1 の画面には、設定画面を開いて閉じるとマイク設定が「止める」に戻ってしまう不具合があるため、
+> maid が画面のファイルの初期値も直しています。
 
 Live2D のモデル（初期は Mao）は表示されますが、Phase 1 では気にせず進めてください。
 
