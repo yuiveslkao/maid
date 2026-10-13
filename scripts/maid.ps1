@@ -80,6 +80,9 @@ if ($Speed -le 0) { $Speed = [double](Get-Setting "speed") }
 $SilenceMs = [int](Get-Setting "silence_ms")        # 無音がこの長さ続いたら AI に送る（ミリ秒）
 $AsrEngine = [string](Get-Setting "asr")            # reazonspeech（日本語専用）/ sensevoice（多言語）
 $AsrLanguage = [string](Get-Setting "asr_language") # sensevoice のときの言語
+$Search = [string](Get-Setting "search")            # auto（頼まれたとき＋最新の情報が要るとき）/ explicit（頼まれたときだけ）/ off
+$SearchFiller = [string](Get-Setting "search_filler") # 調べる前にすぐ言う一言
+$SearchPackages = @("ddgs", "trafilatura")          # 検索と本文の抜き出し（runtime\ の中に入る）
 
 # ------------------------------------------------------------------ このプロセスの中だけの環境変数（Windows の設定は変えない）
 $env:UV_CACHE_DIR = "$Rt\cache\uv"
@@ -194,7 +197,8 @@ function Start-Brain {
     Start-OllamaServer
     if (Test-Port $Ports.BrainProxy) { return }
     # conf.yaml のモデル名に関係なく、maid.settings.json のモデルを使わせる
-    Start-PyPart "brain-proxy" "$Svc\llm_proxy.py" @("--port", "$($Ports.BrainProxy)", "--ollama", "http://127.0.0.1:$($Ports.Ollama)", "--model", "`"$Model`"")
+    Start-PyPart "brain-proxy" "$Svc\llm_proxy.py" @("--port", "$($Ports.BrainProxy)", "--ollama", "http://127.0.0.1:$($Ports.Ollama)", "--model", "`"$Model`"",
+        "--search", $Search, "--search-filler", "`"$SearchFiller`"") $SearchPackages
     if (-not (Wait-Port $Ports.BrainProxy 120 "頭脳の中継")) { throw "頭脳の中継が起動しませんでした（.\maid.bat logs brain-proxy）。" }
 }
 
@@ -300,7 +304,7 @@ function Invoke-Setup {
     Say "[5/6] Open-LLM-VTuber のライブラリ（数 GB。初回は時間がかかります）" Cyan
     Push-Location $P.Olv
     try { & $P.Uv sync; if ($LASTEXITCODE -ne 0) { throw "uv sync に失敗しました。" } } finally { Pop-Location }
-    Invoke-UvPython @("-c", "print('maid の部品用 Python OK')")
+    Invoke-UvPython @("-c", "import ddgs, trafilatura; print('maid の部品用 Python OK')") $SearchPackages
 
     Say "[6/6] 頭脳のモデル ($Model)" Cyan
     Start-OllamaServer

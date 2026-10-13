@@ -1,6 +1,6 @@
 # セットアップと使い方（Windows・完全ローカル）
 
-ゴール: **ネットに何も出さずに、マイクで話しかけるとキャラが AivisSpeech の声で返事をする**状態にする。
+ゴール: **会話は PC の外に出さずに、マイクで話しかけるとキャラが AivisSpeech の声で返事をする**状態にする。「○○調べて」と頼むと Web で調べて答える。
 
 ```
 マイク ──▶ 画面 ──▶ Discord ゲート (12394) ──▶ [Open-LLM-VTuber (12393)]  VAD（話し始め/終わり検出）→ ReazonSpeech（文字起こし, CPU）
@@ -10,7 +10,7 @@
                 └─▶ ブリッジ (127.0.0.1:10102) ─▶ AivisSpeech Engine (127.0.0.1:10101) ─▶ ヘッドホン
 ```
 
-すべて `127.0.0.1`（自分の PC の中）で通信します。ネットを使うのは **初回のダウンロード時だけ** です。
+部品どうしはすべて `127.0.0.1`（自分の PC の中）で通信します。ネットを使うのは **初回のダウンロード** と **Web 検索（検索語とページの取得だけ）** です。検索を使わないなら `maid.settings.json` の `search` を `off` にします。
 
 ---
 
@@ -80,7 +80,9 @@ maid.bat check
   "speed": 1.0,
   "silence_ms": 900,
   "asr": "reazonspeech",
-  "asr_language": "ja"
+  "asr_language": "ja",
+  "search": "auto",
+  "search_filler": "ちょっと調べるね。"
 }
 ```
 
@@ -92,6 +94,8 @@ maid.bat check
 | silence_ms | 話し終わりの判定。無音がこの時間（ミリ秒）続いたら AI に送る。短いほど返事が速いが、言いかけで切られやすい（900 前後がおすすめ） |
 | asr | 音声認識のエンジン。`reazonspeech`（日本語専用・おすすめ。初回起動時に約 700MB ダウンロード）か `sensevoice`（多言語） |
 | asr_language | `sensevoice` のときの言語。`ja`（日本語固定）か `auto`（自動判定。短い発話を韓国語などと間違えやすい） |
+| search | Web 検索。`auto`（「調べて」「検索」と頼まれたとき＋「今日の」「天気」「ニュース」など最新の情報が要りそうなとき）/ `explicit`（頼まれたときだけ）/ `off`（使わない） |
+| search_filler | 調べる前にすぐ言う一言。空（`""`）にすると言わない |
 
 変えたら `.\maid.bat stop` → `.\start.bat` で反映されます。
 
@@ -110,6 +114,10 @@ maid.bat check
 
 `runtime\Open-LLM-VTuber\conf.yaml` の `character_name` / `persona_prompt` を書き換えます。
 （元の雛形は `config\open-llm-vtuber\conf.yaml`。setup は既にある conf.yaml を上書きしません）
+
+> 検索を使うときは、persona_prompt に「インターネットを見られない」「今は調べられないと言う」のような決まりがあれば消すか、
+> 「最新の情報は、Web 検索の結果が渡されたときだけそれを使って答える。結果が無いときは推測で答えない。」に書き換えてください。
+> 残っていると、調べた結果があっても「調べられない」と答えることがあります。今の日時は頭脳の中継が毎回渡します。
 
 ## 6. 起動
 
@@ -212,7 +220,10 @@ maid.bat bench <モデルA>,<モデルB>
 
 ## 11. 外に出ていないか確認する
 
-- `conf.yaml` で `use_mcpp: False`（検索ツールなし）になっている。
+- 外に出るのは Web 検索のときだけで、送るのは**検索語**（頭脳が会話から作る短い言葉。名前などの個人的な情報は入れないよう指示しています）と**ページの取得**だけです。会話そのものは送りません。
+- 何を検索したかは `runtime\logs\brain-proxy.log` に出ます。
+- 検索を止めたいときは `maid.settings.json` の `search` を `off` にします。
+- `conf.yaml` は `use_mcpp: False` のままです（検索は Open-LLM-VTuber のツールではなく頭脳の中継が行います）。
 - 起動ログに出る URL がすべて `localhost` / `127.0.0.1` になっている。
 - 不安なら、Windows のファイアウォールで Ollama / AivisSpeech / Open-LLM-VTuber の送信をブロックしても動きます（モデルのダウンロード後）。
 

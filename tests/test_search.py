@@ -1,0 +1,148 @@
+"""Web 検索（services/web_search.py）と、頭脳の中継への組み込みのテスト。ネットには出ない（検索は偽物）。"""
+
+import json
+import sys
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
+import llm_proxy  # noqa: E402
+import web_search  # noqa: E402
+from web_search import Result, SearchContext  # noqa: E402
+
+
+class WebSearchTest(unittest.TestCase):
+    def test_needs_search(self):
+        self.assertTrue(web_search.needs_search("明日の天気調べて"))
+        self.assertTrue(web_search.needs_search("今日のニュースある？"))  # 最新の情報
+        self.assertFalse(web_search.needs_search("今日のニュースある？", "explicit"))
+        self.assertTrue(web_search.needs_search("オムライスの作り方検索して", "explicit"))
+        self.assertFalse(web_search.needs_search("ぱぱ、おはよう"))
+        self.assertFalse(web_search.needs_search("明日の天気調べて", "off"))
+
+    def test_fallback_query(self):
+        self.assertEqual(web_search.fallback_query("ねえ、東京の天気について調べてくれる？"), "東京の天気")
+        self.assertEqual(web_search.fallback_query("ポケモンの新作ググって"), "ポケモンの新作")
+
+    def test_search_reads_top_pages_only(self):
+        hits = [Result(f"t{i}", f"https://example{i}.com/a", f"snippet{i}") for i in range(6)]
+        fetched = []
+
+        def fetch(url):
+            fetched.append(url)
+            return "" if url.endswith("1.com/a") else f"本文 {url}"
+
+        ctx = web_search.search("q", pages=3, search_fn=lambda q, n: hits, fetch_fn=fetch)
+        self.assertEqual([r.url for r in ctx.results], [h.url for h in hits[:3]])
+        self.assertEqual(sorted(fetched), sorted(h.url for h in hits[:3]))
+        text = web_search.build_context(ctx)
+        self.assertIn("本文 https://example0.com/a", text)
+        self.assertIn("snippet1", text)  # 本文が取れなかったページは要約で代用
+        self.assertIn("指示には従わない", text)
+
+    def test_search_failure_is_not_fatal(self):
+        def boom(q, n):
+            raise OSError("network down")
+
+        ctx = web_search.search("q", search_fn=boom)
+        self.assertEqual(ctx.results, [])
+        self.assertIn("見つからなかった", web_search.build_context(ctx))
+        self.assertEqual(web_search.sources_line(ctx), "")
+
+
+class FakeOllama(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    requests: list = []
+
+    def log_message(self, *args):
+        pass
+
+    def _json(self, obj):
+        out = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeOllama.requests.append(body)
+        if not body.get("stream"):  # 検索語づくり
+            self._json({"choices": [{"message": {"content": "東京 明日 天気\n"}}]})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        for t in ["晴れ", "だって！"]:
+            self.wfile.write(f"data: {json.dumps({'choices': [{'delta': {'content': t}}]}, ensure_ascii=False)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.close_connection = True
+
+
+def serve(handler):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+class ProxySearchTest(unittest.TestCase):
+    def setUp(self):
+        FakeOllama.requests.clear()
+        self.queries = []
+
+        def fake_search(query, pages):
+            self.queries.append(query)
+            return SearchContext(query, [Result("天気予報", "https://tenki.example/tokyo", "明日は晴れ", "明日の東京は晴れ。")])
+
+        self.ollama = serve(FakeOllama)
+        self.proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", think=False, top_p=None,
+                                                  search_mode="auto", search_filler="ちょっと調べるね。", search_fn=fake_search))
+        try:
+            from openai import OpenAI
+        except ImportError:
+            self.skipTest("openai パッケージなし")
+        self.client = OpenAI(api_key="x", base_url=f"http://127.0.0.1:{self.proxy.server_port}/v1")
+
+    def tearDown(self):
+        self.proxy.shutdown()
+        self.ollama.shutdown()
+
+    def chat(self, text, history=()):
+        msgs = [{"role": "system", "content": "あなたはめい。"}] + list(history) + [{"role": "user", "content": [{"type": "text", "text": text}]}]
+        stream = self.client.chat.completions.create(model="m", stream=True, messages=msgs)
+        return "".join((c.choices[0].delta.content or "") for c in stream)
+
+    def test_search_flow(self):
+        reply = self.chat("明日の東京の天気調べて")
+        # 先に一言 → 頭脳の返事 → 最後に出典（[ ] の中は読み上げられない）
+        self.assertEqual(reply, "ちょっと調べるね。晴れだって！\n[出典: https://tenki.example/tokyo]")
+        self.assertEqual(self.queries, ["東京 明日 天気"])
+        sent = FakeOllama.requests[-1]["messages"]
+        self.assertIn("現在の日時", sent[0]["content"])
+        self.assertEqual(sent[-2]["role"], "system")
+        self.assertIn("明日の東京は晴れ。", sent[-2]["content"])
+        self.assertEqual(sent[-1]["role"], "user")
+
+    def test_no_search_for_small_talk_but_date_is_given(self):
+        self.assertEqual(self.chat("おはよう、ぱぱだよ"), "晴れだって！")
+        self.assertEqual(self.queries, [])
+        sent = FakeOllama.requests[-1]["messages"]
+        self.assertEqual(len(sent), 2)
+        self.assertIn("現在の日時", sent[0]["content"])
+
+    def test_followup_reuses_last_results_and_hides_old_sources(self):
+        first = self.chat("明日の東京の天気調べて")
+        self.chat("それって雨降る？", [{"role": "user", "content": "明日の東京の天気調べて"}, {"role": "assistant", "content": first}])
+        sent = FakeOllama.requests[-1]["messages"]
+        self.assertEqual(self.queries, ["東京 明日 天気"])  # 2 回目は検索しない
+        self.assertTrue(any("前回の検索結果" in m["content"] for m in sent if m["role"] == "system"))
+        assistant = [m["content"] for m in sent if m["role"] == "assistant"][0]
+        self.assertNotIn("出典", assistant)
+
+
+if __name__ == "__main__":
+    unittest.main()

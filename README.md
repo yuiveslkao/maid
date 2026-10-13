@@ -18,7 +18,8 @@ start.bat          rem 起動
 
 ```
 マイク ─▶ 画面（Edge）─▶ Discord ゲート ─▶ Open-LLM-VTuber ─┬─▶ 音声認識（ReazonSpeech, CPU）
-                                                            ├─▶ 頭脳の中継 ─▶ Ollama（GPU）
+                                                            ├─▶ 頭脳の中継 ─┬▶ Ollama（GPU）
+                                                            │               └▶ Web 検索（検索語とページ取得だけ外へ）
                                                             └─▶ 声の中継 ─▶ AivisSpeech ─▶ ヘッドホン
 ```
 
@@ -32,7 +33,8 @@ Open-LLM-VTuber 本体は改造せず、前後に中継を挟んだり、設定�
 | `scripts/maid.ps1` | ダウンロード・確認・起動・停止・診断など（`maid.bat` で一覧） |
 | `scripts/olv_patch.py` | Open-LLM-VTuber に当てる修正（画面のマイク設定、音声認識の設定、モデルの展開） |
 | `scripts/bench_latency.py` | 頭脳と声の応答速度を測る |
-| `services/llm_proxy.py` | 頭脳の中継。考えるモードを切る、モデルのすり替え、空の返事の聞き直し、繰り返しの打ち切り |
+| `services/llm_proxy.py` | 頭脳の中継。考えるモードを切る、モデルのすり替え、空の返事の聞き直し、繰り返しの打ち切り、今の日時と検索結果を渡す |
+| `services/web_search.py` | Web 検索（DuckDuckGo）とページ本文の抜き出し。外に出るのは検索語と開いたページだけ |
 | `services/tts_bridge.py` | 声の中継。AivisSpeech を OpenAI 互換の TTS として見せる |
 | `services/discord_gate.py` | Discord ゲート。Discord で通話中は声を本体に渡さない |
 | `config/maid.settings.default.json` | `maid.settings.json`（いつも使う設定）の既定値 |
