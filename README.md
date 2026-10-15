@@ -10,7 +10,6 @@ PC を汚さない構成です。インストーラーや PATH の変更は使�
 
 ```bat
 setup.bat          rem 必要なものを runtime\ にダウンロード
-maid.bat check     rem そろっているか確認
 start.bat          rem 起動
 ```
 
@@ -31,13 +30,12 @@ Open-LLM-VTuber 本体は改造せず、前後に中継を挟んだり、設定�
 |---|---|
 | `maid.bat` / `setup.bat` / `start.bat` | 入口。中身は `scripts/maid.ps1` |
 | `scripts/maid.ps1` | ダウンロード・確認・起動・停止・診断など（`maid.bat` で一覧） |
-| `scripts/olv_patch.py` | Open-LLM-VTuber に当てる修正（画面のマイク設定、音声認識の設定、モデルの展開） |
-| `scripts/bench_latency.py` | 頭脳と声の応答速度を測る |
-| `services/llm_proxy.py` | 頭脳の中継。考えるモードを切る、モデルのすり替え、空の返事の聞き直し、繰り返しの打ち切り、今の日時と検索結果を渡す |
+| `scripts/olv_patch.py` | Open-LLM-VTuber に当てる修正（画面のマイク設定、conf.yaml を maid の形にそろえる、音声認識モデルの展開） |
+| `services/llm_proxy.py` | 頭脳の中継。考えるモードを切る、モデルのすり替え、繰り返しの打ち切り、今の日時と検索結果を渡す |
 | `services/web_search.py` | Web 検索（DuckDuckGo）とページ本文の抜き出し。外に出るのは検索語と開いたページだけ |
 | `services/tts_bridge.py` | 声の中継。AivisSpeech を OpenAI 互換の TTS として見せる |
 | `services/discord_gate.py` | Discord ゲート。Discord で通話中は声を本体に渡さない |
 | `config/maid.settings.default.json` | `maid.settings.json`（いつも使う設定）の既定値 |
-| `config/open-llm-vtuber/conf.yaml` | Open-LLM-VTuber の設定の雛形（setup で `runtime/` にコピーされる） |
-| `tests/` | テスト（`runtime\uv\uv.exe run --no-project --with "websockets>=13" --with openai --with ruamel.yaml --with pyyaml python -m unittest discover -s tests`） |
+| `config/open-llm-vtuber/conf.yaml` | Open-LLM-VTuber の設定の雛形（maid で使う項目だけ。setup で `runtime/` にコピーされる） |
+| `tests/` | テスト（`runtime\uv\uv.exe run --no-project --python 3.10 --with "websockets>=13" --with openai --with ruamel.yaml --with pyyaml python -m unittest discover -s tests`） |
 | `runtime/` | ダウンロードしたもの一式（git の管理外。消せば元通り） |

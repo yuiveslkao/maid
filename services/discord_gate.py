@@ -5,9 +5,8 @@ WebSocket を中継し、Discord がマイクを使っている間だけ「マ�
 本体に渡さない。チャット入力はそのまま通す。本体は改造しない。
 
     uv run --no-project --with "websockets>=13" python services/discord_gate.py
-    uv run --no-project --with "websockets>=13" python services/discord_gate.py --check   # 判定だけ確認
 
-画面の設定で WebSocket URL を ws://127.0.0.1:12394/client-ws に変える（Base URL はそのまま）。
+画面の WebSocket URL を ws://127.0.0.1:12394/client-ws にする（maid が起動時に設定する）。
 
 Discord の通話判定には、Windows がアプリごとのマイク使用状況を記録しているレジストリ
 （タスクバーのマイク表示と同じ情報）を使う。Discord は通話中だけマイクを開くので、これで判定できる。
@@ -64,11 +63,9 @@ def discord_using_mic() -> bool:
 
 
 class Gate:
-    def __init__(self, backend_url: str, detector: Callable[[], bool], block_proactive: bool = True,
-                 poll_seconds: float = 1.0):
+    def __init__(self, backend_url: str, detector: Callable[[], bool], poll_seconds: float = 1.0):
         self.backend_url = backend_url
         self.detector = detector
-        self.block_proactive = block_proactive
         self.poll_seconds = poll_seconds
         self.in_call = False
         self.clients: set[ServerConnection] = set()
@@ -138,7 +135,7 @@ class Gate:
                         # 画面が「考え中」のまま止まらないよう、会話が終わった合図を返す
                         await client.send(json.dumps({"type": "control", "text": "conversation-chain-end"}))
                         continue
-                elif msg_type == "ai-speak-signal" and self.block_proactive and self.in_call:
+                elif msg_type == "ai-speak-signal" and self.in_call:  # 通話中はキャラから話しかけない
                     continue
 
                 await backend.send(raw)
@@ -159,15 +156,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=12394)
     p.add_argument("--backend", default="ws://127.0.0.1:12393", help="Open-LLM-VTuber 本体")
-    p.add_argument("--allow-proactive", action="store_true", help="通話中もキャラからの自発発話を許す")
-    p.add_argument("--check", action="store_true", help="いま Discord がマイクを使っているかだけ表示して終わる")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-
-    if a.check:
-        print("Discord はマイクを使用中（通話中）" if discord_using_mic() else "Discord はマイクを使っていません")
-        return
-    gate = Gate(a.backend, discord_using_mic, block_proactive=not a.allow_proactive)
+    gate = Gate(a.backend, discord_using_mic)
     try:
         asyncio.run(run(a.host, a.port, gate))
     except KeyboardInterrupt:

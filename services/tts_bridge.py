@@ -4,15 +4,13 @@ Open-LLM-VTuber v1.2.x は AivisSpeech に標準対応していないが、OpenA
 (`tts_model: 'openai_tts'`) には対応しているので、その形に変換する。
 Open-LLM-VTuber 本体を改造しないので、本体のアップデートに影響されない。
 
-標準ライブラリだけで動く（pip install 不要）。
+標準ライブラリだけで動く。
 
-    python services/tts_bridge.py
-    python services/tts_bridge.py --voice "話者名/ノーマル" --speed 1.1
+    python services/tts_bridge.py --voice "コハク/あまあま" --speed 1.0
 
 エンドポイント:
     POST /v1/audio/speech   {"input": "...", "voice": "<スタイルID | 話者名 | 話者名/スタイル名 | default>", "speed": 1.0}
-    GET  /v1/voices         使えるボイス（スタイル ID）の一覧
-    GET  /health            AivisSpeech Engine につながるか
+    GET  /v1/voices         使える声（スタイル ID）の一覧
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ import urllib.request
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-log = logging.getLogger("aivis_bridge")
+log = logging.getLogger("tts_bridge")
 
 
 @dataclass
@@ -37,10 +35,7 @@ class Settings:
     aivis_url: str = "http://127.0.0.1:10101"
     default_voice: str = "default"
     speed: float = 1.0
-    pitch: float = 0.0
-    intonation: float = 1.0
-    tempo_dynamics: float = 1.0
-    pre_silence: float = 0.0
+    pre_silence: float = 0.0    # 頭の無音を削ると体感が速くなる
     post_silence: float = 0.05
     timeout: float = 30.0
 
@@ -105,11 +100,7 @@ class AivisClient:
         style_id = self.resolve(voice)
         query = json.loads(self._request("POST", "/audio_query", {"text": text, "speaker": style_id}))
         query["speedScale"] = self.s.speed * (speed or 1.0)
-        query["pitchScale"] = self.s.pitch
-        query["intonationScale"] = self.s.intonation
-        if "tempoDynamicsScale" in query:  # AivisSpeech 独自パラメータ
-            query["tempoDynamicsScale"] = self.s.tempo_dynamics
-        query["prePhonemeLength"] = self.s.pre_silence  # 頭の無音を削ると体感が速くなる
+        query["prePhonemeLength"] = self.s.pre_silence
         query["postPhonemeLength"] = self.s.post_silence
         body = json.dumps(query, ensure_ascii=False).encode("utf-8")
         return self._request("POST", "/synthesis", {"speaker": style_id}, body)
@@ -137,19 +128,16 @@ def make_handler(client: AivisClient):
 
         def do_GET(self):
             path = urllib.parse.urlparse(self.path).path.rstrip("/")
+            if path != "/v1/voices":
+                return self._error(404, "not found")
             try:
-                if path in ("/v1/voices", "/voices"):
-                    self._json(200, {"voices": client.voices(refresh=True)})
-                elif path == "/health":
-                    self._json(200, {"ok": True, "voices": len(client.voices(refresh=True))})
-                else:
-                    self._error(404, "not found")
+                self._json(200, {"voices": client.voices(refresh=True)})
             except (urllib.error.URLError, OSError) as e:
                 self._error(502, f"AivisSpeech Engine ({client.s.aivis_url}) に接続できません: {e}")
 
         def do_POST(self):
             path = urllib.parse.urlparse(self.path).path.rstrip("/")
-            if path not in ("/v1/audio/speech", "/audio/speech"):
+            if path != "/v1/audio/speech":
                 return self._error(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -203,30 +191,19 @@ def warm_up(client: AivisClient) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description="AivisSpeech → OpenAI 互換 TTS ブリッジ")
+    p = argparse.ArgumentParser(description="声の中継（AivisSpeech → OpenAI 互換 TTS）")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=10102)
     p.add_argument("--aivis-url", default=Settings.aivis_url)
-    p.add_argument("--voice", default=Settings.default_voice, help="リクエストに voice が無い/default のときに使うボイス")
-    p.add_argument("--speed", type=float, default=Settings.speed, help="話速 (1.0 = 標準)")
-    p.add_argument("--pitch", type=float, default=Settings.pitch, help="音高 (0.0 = 標準)")
-    p.add_argument("--intonation", type=float, default=Settings.intonation, help="感情表現の強さ (1.0 = 標準)")
-    p.add_argument("--tempo-dynamics", type=float, default=Settings.tempo_dynamics, help="テンポの緩急 (1.0 = 標準)")
-    p.add_argument("--pre-silence", type=float, default=Settings.pre_silence, help="音声の前の無音 (秒)")
-    p.add_argument("--post-silence", type=float, default=Settings.post_silence, help="音声の後の無音 (秒)")
-    p.add_argument("--no-warmup", action="store_true")
-    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--voice", default=Settings.default_voice, help="リクエストの voice が default のときに使う声")
+    p.add_argument("--speed", type=float, default=Settings.speed, help="話す速さ (1.0 = 標準)")
     a = p.parse_args(argv)
 
-    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-    client = AivisClient(Settings(
-        aivis_url=a.aivis_url, default_voice=a.voice, speed=a.speed, pitch=a.pitch, intonation=a.intonation,
-        tempo_dynamics=a.tempo_dynamics, pre_silence=a.pre_silence, post_silence=a.post_silence,
-    ))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    client = AivisClient(Settings(aivis_url=a.aivis_url, default_voice=a.voice, speed=a.speed))
     server = ThreadingHTTPServer((a.host, a.port), make_handler(client))
-    log.info("ブリッジ起動: http://%s:%d/v1  →  %s", a.host, a.port, a.aivis_url)
-    if not a.no_warmup:
-        threading.Thread(target=warm_up, args=(client,), daemon=True).start()
+    log.info("声の中継: http://%s:%d/v1  →  %s（声: %s）", a.host, a.port, a.aivis_url, a.voice)
+    threading.Thread(target=warm_up, args=(client,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

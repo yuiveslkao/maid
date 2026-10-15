@@ -3,12 +3,12 @@
 本体は改造しない方針だが、設定で変えられない部分だけここで直す:
 
     frontend      画面の初期設定 (maid-defaults.js) を書き、画面のマイク設定の不具合を直す
-    asr           conf.yaml の音声認識の部分だけを書き換え、SenseVoice の言語を固定する
+    conf          conf.yaml を maid の形にそろえる（使わない設定を消し、音声認識を ReazonSpeech に。キャラの設定はそのまま）
     extract-asr   ReazonSpeech のアーカイブから必要なファイルだけを取り出す
 
 Open-LLM-VTuber のライブラリ（ruamel.yaml）を使うので、その環境で動かす:
 
-    uv run --project runtime/Open-LLM-VTuber python scripts/olv_patch.py asr --olv runtime/Open-LLM-VTuber --engine reazonspeech
+    uv run --project runtime/Open-LLM-VTuber python scripts/olv_patch.py conf --olv runtime/Open-LLM-VTuber
 """
 
 from __future__ import annotations
@@ -95,75 +95,85 @@ def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int) -> 
     return changed
 
 
-# ------------------------------------------------------------------ 音声認識
+# ------------------------------------------------------------------ conf.yaml
 
 REAZON_NAME = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"
 REAZON_FILES = ("encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.int8.onnx",
                 "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt")
-SENSEVOICE_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
 
-ASR_ENGINES = {
-    # 日本語専用（ReazonSpeech の日本語音声で学習）。CPU で速く、日本語の精度が高い
-    "reazonspeech": {
-        "model_type": "transducer",
-        "encoder": f"./models/{REAZON_NAME}/{REAZON_FILES[0]}",
-        "decoder": f"./models/{REAZON_NAME}/{REAZON_FILES[1]}",
-        "joiner": f"./models/{REAZON_NAME}/{REAZON_FILES[2]}",
-        "tokens": f"./models/{REAZON_NAME}/tokens.txt",
-        "use_itn": False,
-    },
-    # 多言語（中国語中心）。Open-LLM-VTuber の初期設定
-    "sensevoice": {
-        "model_type": "sense_voice",
-        "sense_voice": f"./models/{SENSEVOICE_NAME}/model.int8.onnx",
-        "tokens": f"./models/{SENSEVOICE_NAME}/tokens.txt",
-        "use_itn": True,
-    },
+# 音声認識は ReazonSpeech（日本語専用, CPU）に固定する
+REAZON_ASR = {
+    "model_type": "transducer",
+    "encoder": f"./models/{REAZON_NAME}/{REAZON_FILES[0]}",
+    "decoder": f"./models/{REAZON_NAME}/{REAZON_FILES[1]}",
+    "joiner": f"./models/{REAZON_NAME}/{REAZON_FILES[2]}",
+    "tokens": f"./models/{REAZON_NAME}/tokens.txt",
+    "use_itn": False,
 }
 
-SENSEVOICE_ANCHOR = "model=self.sense_voice,"
-LANG_LINE = re.compile(r'language="[a-z]*",  # maid-asr-language')
+# 利用者が書き換える部分（作り直すときに引き継ぐ）
+CHARACTER_KEYS = ("conf_name", "conf_uid", "live2d_model_name", "avatar", "character_name", "human_name", "persona_prompt")
+# maid で使う部分。これ以外の項目がある conf.yaml は、雛形から作り直す
+MAID_SHAPE = {
+    ("character_config", "agent_config", "agent_settings"): {"basic_memory_agent"},
+    ("character_config", "agent_config", "llm_configs"): {"ollama_llm"},
+    ("character_config", "asr_config"): {"asr_model", "sherpa_onnx_asr"},
+    ("character_config", "tts_config"): {"tts_model", "openai_tts"},
+}
 
 
-def patch_conf_asr(conf: Path, engine: str) -> bool:
-    """conf.yaml の音声認識の部分だけを書き換える（キャラ設定などやコメントには触らない）。"""
+def _yaml():
     from ruamel.yaml import YAML
 
     yaml = YAML()
     yaml.preserve_quotes = True
     yaml.width = 4096
+    return yaml
+
+
+def _get(data, path):
+    for key in path:
+        data = data.get(key) if hasattr(data, "get") else None
+    return data
+
+
+def is_maid_shape(data) -> bool:
+    return "live_config" not in data and all(set(_get(data, path) or {}) <= keep for path, keep in MAID_SHAPE.items())
+
+
+def patch_conf(conf: Path, template: Path) -> str:
+    """conf.yaml を maid の形にそろえる。戻り値は "rebuilt"（作り直した）/ "asr"（音声認識だけ直した）/ ""（変更なし）。
+
+    - 使わない設定（ほかの頭脳・音声認識・声など）が入っていたら、雛形から作り直してキャラの設定だけ引き継ぐ。
+      元のファイルは conf.yaml.before-maid に残す。
+    - 音声認識は ReazonSpeech に固定する。
+    """
+    yaml = _yaml()
     with conf.open(encoding="utf-8") as f:
         data = yaml.load(f)
+    result = ""
+    if not is_maid_shape(data):
+        with template.open(encoding="utf-8") as f:
+            fresh = yaml.load(f)
+        for key in CHARACTER_KEYS:
+            if key in data["character_config"]:
+                fresh["character_config"][key] = data["character_config"][key]
+        conf.with_name(conf.name + ".before-maid").write_bytes(conf.read_bytes())
+        data = fresh
+        result = "rebuilt"
+
     asr = data["character_config"]["asr_config"]
     sherpa = asr.setdefault("sherpa_onnx_asr", {})
-    changed = False
-    if asr.get("asr_model") != "sherpa_onnx_asr":
+    wrong = {k: v for k, v in REAZON_ASR.items() if sherpa.get(k) != v}
+    if wrong or asr.get("asr_model") != "sherpa_onnx_asr" or "sense_voice" in sherpa:
         asr["asr_model"] = "sherpa_onnx_asr"
-        changed = True
-    for key, value in ASR_ENGINES[engine].items():
-        if sherpa.get(key) != value:
-            sherpa[key] = value
-            changed = True
-    if changed:
+        sherpa.pop("sense_voice", None)
+        sherpa.update(wrong)
+        result = result or "asr"
+    if result:
         with conf.open("w", encoding="utf-8", newline="\n") as f:
             yaml.dump(data, f)
-    return changed
-
-
-def patch_sensevoice_language(asr_py: Path, language: str) -> bool:
-    """v1.2.1 は SenseVoice の言語を設定できないので、言語指定の 1 行を足す（自動判定だと韓国語などに間違える）。"""
-    text = asr_py.read_text(encoding="utf-8")
-    line = f'language="{language}",  # maid-asr-language'
-    if LANG_LINE.search(text):
-        new = LANG_LINE.sub(line, text)
-    else:
-        i = text.find(SENSEVOICE_ANCHOR)
-        if i < 0:
-            raise ValueError("SenseVoice の呼び出しが見つかりません（Open-LLM-VTuber の版が違う？）")
-        nl = "\r\n" if "\r\n" in text else "\n"
-        end = i + len(SENSEVOICE_ANCHOR)
-        new = text[:end] + f"{nl}                {line}" + text[end:]
-    return _write_if_changed(asr_py, new)
+    return result
 
 
 def extract_reazon(archive: Path, dest: Path) -> None:
@@ -192,10 +202,9 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--ws-url", required=True)
     f.add_argument("--base-url", default="http://127.0.0.1:12393")
     f.add_argument("--silence-ms", type=int, default=900)
-    a = sub.add_parser("asr")
-    a.add_argument("--olv", required=True)
-    a.add_argument("--engine", choices=sorted(ASR_ENGINES), required=True)
-    a.add_argument("--language", default="ja", help="sensevoice のときの言語（ja / auto / en / zh / ko / yue）")
+    c = sub.add_parser("conf")
+    c.add_argument("--olv", required=True)
+    c.add_argument("--template", default=str(Path(__file__).resolve().parent.parent / "config" / "open-llm-vtuber" / "conf.yaml"))
     e = sub.add_parser("extract-asr")
     e.add_argument("archive")
     e.add_argument("--olv", required=True)
@@ -205,10 +214,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "frontend":
         changed = patch_frontend(olv / "frontend", args.ws_url, args.base_url, args.silence_ms)
         print("画面の設定: " + (", ".join(changed) + " を更新" if changed else "変更なし"))
-    elif args.cmd == "asr":
-        changed = patch_conf_asr(olv / "conf.yaml", args.engine)
-        patch_sensevoice_language(olv / "src" / "open_llm_vtuber" / "asr" / "sherpa_onnx_asr.py", args.language)
-        print(f"音声認識: {args.engine}" + ("（conf.yaml を書き換えました）" if changed else ""))
+    elif args.cmd == "conf":
+        result = patch_conf(olv / "conf.yaml", Path(args.template))
+        if result == "rebuilt":
+            print("conf.yaml から使わない設定を消しました（キャラの設定はそのまま。元のファイルは conf.yaml.before-maid）")
+        elif result:
+            print("conf.yaml の音声認識を ReazonSpeech に直しました")
     elif args.cmd == "extract-asr":
         extract_reazon(Path(args.archive), olv / "models" / REAZON_NAME)
         print("音声認識モデルを展開しました")

@@ -23,23 +23,6 @@ class FakeOllama(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeOllama.requests.append((self.path, body))
-        if self.path == "/v1/chat/completions" and body.get("model") == "rp-model" and body.get("reasoning_effort"):
-            # 考えるモードの無いモデル: 指定を付けると中身なしで終わる（Aratako の RP モデルで実際に起きた）
-            if body.get("stream"):
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(b'data: {"choices":[{"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
-                self.close_connection = True
-            else:
-                out = json.dumps({"choices": [{"message": {"role": "assistant", "content": ""}}]}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(out)))
-                self.end_headers()
-                self.wfile.write(out)
-            return
         if self.path == "/v1/chat/completions" and body.get("model") == "loop-model":
             # 壊れたように同じ言葉を繰り返し続けるモデル
             self.send_response(200)
@@ -103,7 +86,7 @@ class ProxyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ollama = serve(FakeOllama)
-        cls.proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{cls.ollama.server_port}", think=False, top_p=0.8))
+        cls.proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{cls.ollama.server_port}"))
         cls.base = f"http://127.0.0.1:{cls.proxy.server_port}"
 
     @classmethod
@@ -114,16 +97,12 @@ class ProxyTest(unittest.TestCase):
     def setUp(self):
         FakeOllama.requests.clear()
 
-    def test_rewrite_rules(self):
-        r = json.loads(llm_proxy.rewrite_chat_request(b'{"model":"m","top_p":0.5}', think=False, top_p=0.8))
-        self.assertEqual((r["reasoning_effort"], r["top_p"]), ("none", 0.5))
-        r = json.loads(llm_proxy.rewrite_chat_request(b'{"reasoning_effort":"high"}', think=False, top_p=None, defaults={}))
-        self.assertEqual(r, {"reasoning_effort": "high"})
-        r = json.loads(llm_proxy.rewrite_chat_request(b'{"max_tokens":50}', think=True, top_p=None))
-        self.assertEqual((r["max_tokens"], r["presence_penalty"]), (50, 0.5))
-        r = json.loads(llm_proxy.rewrite_chat_request(b'{"model":"m"}', think=True, top_p=None))
-        self.assertNotIn("reasoning_effort", r)
-        self.assertEqual(llm_proxy.rewrite_chat_request(b"not json", False, 0.8), b"not json")
+    def test_defaults(self):
+        r = llm_proxy.with_defaults({"model": "m", "top_p": 0.5}, "other")
+        self.assertEqual((r["model"], r["reasoning_effort"], r["top_p"], r["max_tokens"]), ("other", "none", 0.5, 300))
+        r = llm_proxy.with_defaults({"reasoning_effort": "high", "max_tokens": 50}, None)
+        self.assertEqual((r["reasoning_effort"], r["max_tokens"], r["presence_penalty"]), ("high", 50, 0.5))
+        self.assertNotIn("model", llm_proxy.with_defaults({}, "other"))
 
     def test_streaming_with_openai_client(self):
         """Open-LLM-VTuber と同じ openai クライアントでストリーミングが届くか。"""
@@ -140,18 +119,12 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(path, "/v1/chat/completions")
         self.assertEqual((body["reasoning_effort"], body["top_p"], body["temperature"]), ("none", 0.8, 0.8))
 
-    def test_retries_without_effort_when_reply_is_empty(self):
+    def test_non_streaming(self):
         try:
             from openai import OpenAI
         except ImportError:
             self.skipTest("openai パッケージなし")
         client = OpenAI(api_key="x", base_url=self.base + "/v1")
-        for _ in range(2):
-            stream = client.chat.completions.create(model="rp-model", stream=True, messages=[{"role": "user", "content": "やあ"}])
-            self.assertEqual("".join((c.choices[0].delta.content or "") for c in stream), "うん、いいよ")
-        efforts = [b.get("reasoning_effort") for _, b in FakeOllama.requests]
-        # 1 回目: 付けて空 → 外して聞き直し。2 回目: 最初から付けない
-        self.assertEqual(efforts, ["none", None, None])
         r = client.chat.completions.create(model="normal", stream=False, messages=[{"role": "user", "content": "やあ"}])
         self.assertEqual(r.choices[0].message.content, "はい")
 
@@ -182,7 +155,7 @@ class ProxyTest(unittest.TestCase):
             self.assertEqual(json.loads(res.read())["models"][0]["name"], "qwen3:8b")
 
     def test_model_override(self):
-        proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", think=False, top_p=None, model="other:9b"))
+        proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", model="other:9b"))
         try:
             for path in ("/api/chat", "/v1/chat/completions"):
                 req = urllib.request.Request(f"http://127.0.0.1:{proxy.server_port}{path}", data=json.dumps({"model": "qwen3:8b"}).encode(),
@@ -194,7 +167,7 @@ class ProxyTest(unittest.TestCase):
             proxy.shutdown()
 
     def test_upstream_down_gives_502(self):
-        proxy = serve(llm_proxy.make_handler("http://127.0.0.1:1", think=False, top_p=None))
+        proxy = serve(llm_proxy.make_handler("http://127.0.0.1:1"))
         try:
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(f"http://127.0.0.1:{proxy.server_port}/api/tags")

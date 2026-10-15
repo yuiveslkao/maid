@@ -63,44 +63,68 @@ class FrontendTest(unittest.TestCase):
         self.assertEqual(olv_patch.patch_frontend(self.front, "ws://c/client-ws", "http://b", 900), ["maid-defaults.js"])
 
 
-class AsrTest(unittest.TestCase):
+TEMPLATE = ROOT / "config" / "open-llm-vtuber" / "conf.yaml"
+
+
+class ConfTest(unittest.TestCase):
+    def setUp(self):
+        try:
+            import ruamel.yaml  # noqa: F401
+            import yaml
+        except ImportError:
+            self.skipTest("ruamel.yaml / pyyaml なし")
+        self.yaml = yaml
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.conf = self.dir / "conf.yaml"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def load(self):
+        return self.yaml.safe_load(self.conf.read_text(encoding="utf-8"))
+
+    def test_template_is_already_maid_shape(self):
+        self.conf.write_text(TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+        self.assertEqual(olv_patch.patch_conf(self.conf, TEMPLATE), "")
+
+    def test_old_conf_is_rebuilt_keeping_character(self):
+        old = self.yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))
+        cc = old["character_config"]
+        cc["character_name"] = "めい"
+        cc["persona_prompt"] = "あなたはめい。\n- 短く話す。\n"
+        cc["agent_config"]["llm_configs"]["claude_llm"] = {"model": "x"}
+        cc["tts_config"]["edge_tts"] = {"voice": "y"}
+        cc["asr_config"]["sherpa_onnx_asr"] = {"model_type": "sense_voice", "sense_voice": "./a.onnx", "tokens": "./t.txt"}
+        old["live_config"] = {"bilibili_live": {"room_ids": [1]}}
+        self.conf.write_text(self.yaml.safe_dump(old, allow_unicode=True), encoding="utf-8")
+
+        self.assertEqual(olv_patch.patch_conf(self.conf, TEMPLATE), "rebuilt")
+        self.assertEqual(olv_patch.patch_conf(self.conf, TEMPLATE), "")
+        new = self.load()
+        expected = self.yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))
+        expected["character_config"]["character_name"] = "めい"
+        expected["character_config"]["persona_prompt"] = "あなたはめい。\n- 短く話す。\n"
+        self.assertEqual(new, expected)
+        self.assertTrue((self.dir / "conf.yaml.before-maid").exists())
+
+    def test_asr_is_fixed_in_place(self):
+        text = TEMPLATE.read_text(encoding="utf-8").replace("model_type: 'transducer'", "model_type: 'sense_voice'")
+        self.conf.write_text(text.replace("character_name: 'メイド'", "character_name: 'めい'"), encoding="utf-8")
+        self.assertEqual(olv_patch.patch_conf(self.conf, TEMPLATE), "asr")
+        conf = self.load()
+        self.assertEqual(conf["character_config"]["asr_config"]["sherpa_onnx_asr"]["model_type"], "transducer")
+        self.assertEqual(conf["character_config"]["character_name"], "めい")
+        self.assertFalse((self.dir / "conf.yaml.before-maid").exists())
+
+
+class ReazonTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def test_conf_asr_keeps_everything_else(self):
-        try:
-            import ruamel.yaml  # noqa: F401
-            import yaml
-        except ImportError:
-            self.skipTest("ruamel.yaml / pyyaml なし")
-        conf = self.dir / "conf.yaml"
-        conf.write_text((ROOT / "config" / "open-llm-vtuber" / "conf.yaml").read_text(encoding="utf-8"), encoding="utf-8")
-        before = yaml.safe_load(conf.read_text(encoding="utf-8"))
-        self.assertTrue(olv_patch.patch_conf_asr(conf, "reazonspeech"))
-        self.assertFalse(olv_patch.patch_conf_asr(conf, "reazonspeech"))
-        after = yaml.safe_load(conf.read_text(encoding="utf-8"))
-        sherpa = after["character_config"]["asr_config"]["sherpa_onnx_asr"]
-        self.assertEqual(sherpa["model_type"], "transducer")
-        self.assertTrue(sherpa["encoder"].endswith("encoder-epoch-99-avg-1.int8.onnx"))
-        # 音声認識以外は何も変わっていない
-        for d in (before, after):
-            d["character_config"]["asr_config"].pop("sherpa_onnx_asr")
-        self.assertEqual(before, after)
-
-    def test_sensevoice_language_patch(self):
-        py = self.dir / "sherpa_onnx_asr.py"
-        py.write_text("x = f(\n                model=self.sense_voice,\n                tokens=self.tokens,\n)\n", encoding="utf-8")
-        self.assertTrue(olv_patch.patch_sensevoice_language(py, "ja"))
-        self.assertFalse(olv_patch.patch_sensevoice_language(py, "ja"))
-        self.assertTrue(olv_patch.patch_sensevoice_language(py, "auto"))
-        text = py.read_text(encoding="utf-8")
-        self.assertEqual(text.count("maid-asr-language"), 1)
-        self.assertIn('language="auto",', text)
-        compile(text, "x", "exec")
 
     def test_extract_reazon_keeps_only_needed_files(self):
         archive = self.dir / "m.tar.bz2"

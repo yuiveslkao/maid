@@ -99,8 +99,8 @@ class ProxySearchTest(unittest.TestCase):
             return SearchContext(query, [Result("天気予報", "https://tenki.example/tokyo", "明日は晴れ", "明日の東京は晴れ。")])
 
         self.ollama = serve(FakeOllama)
-        self.proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", think=False, top_p=None,
-                                                  search_mode="auto", search_filler="ちょっと調べるね。", search_fn=fake_search))
+        self.proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", search_mode="auto",
+                                                  search_filler="ちょっと調べるね。", search_fn=fake_search))
         try:
             from openai import OpenAI
         except ImportError:

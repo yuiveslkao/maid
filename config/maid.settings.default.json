@@ -3,8 +3,6 @@
   "voice": "コハク/あまあま",
   "speed": 1.0,
   "silence_ms": 900,
-  "asr": "reazonspeech",
-  "asr_language": "ja",
   "search": "auto",
   "search_filler": "ちょっと調べるね。"
 }
