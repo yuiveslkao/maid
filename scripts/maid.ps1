@@ -78,6 +78,8 @@ $Search = [string](Get-Setting "search")               # auto / explicit / off
 $SearchFiller = [string]$UserSettings.search_filler    # 調べる前にすぐ言う一言（空なら言わない）
 if ($null -eq $UserSettings.search_filler) { $SearchFiller = [string]$Defaults.search_filler }
 $Vrm = [string](Get-Setting "vrm")                     # 3D モデル (.vrm) のパス。空なら Live2D
+# 「models/xxx.vrm」のような書き方は maid フォルダからの場所とみなす
+if ($Vrm -and -not [IO.Path]::IsPathRooted($Vrm)) { $Vrm = Join-Path $Root $Vrm }
 $VrmView = [string](Get-Setting "vrm_view")            # bust（胸から上）/ full（全身）
 
 # ------------------------------------------------------------------ このプロセスの中だけの環境変数（Windows の設定は変えない）

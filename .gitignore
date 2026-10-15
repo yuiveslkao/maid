@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 runtime/
 maid.settings.json
+models/*
+!models/README.md

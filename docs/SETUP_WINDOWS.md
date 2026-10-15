@@ -105,14 +105,16 @@
 
 ### 3D モデル（VRM）を表示する
 
-`maid.settings.json` の `vrm` に .vrm ファイルの場所を書いて、`.\maid.bat stop` → `start.bat`。
-場所の区切りは `/` にします（`\` を使うなら `\\` と 2 つ重ねる。JSON の決まりのため）。
+.vrm ファイル 1 つだけで動きます（テクスチャもファイルの中に入っています）。maid フォルダの `models\` に置いて、
+`maid.settings.json` の `vrm` に書き、`.\maid.bat stop` → `start.bat`。`models\` の中は git に入りません。
 
 ```json
-  "vrm": "C:/Users/m/Downloads/Lulum_3D_1.10_配布版/Lulum 3D 1.10 配布版/vrm/lulum_1.04.vrm",
+  "vrm": "models/lulum_1.04.vrm",
 ```
 
-- モデルは起動のたびに `runtime\Open-LLM-VTuber\frontend\maid-vrm\` にコピーされます（変わっていなければコピーしない）。元のファイルは消しても動きます。
+ほかの場所に置いたままでも、フルパスで書けば使えます（区切りは `/`。`\` を使うなら `\\` と 2 つ重ねる）。
+
+- モデルは起動のたびに `runtime\Open-LLM-VTuber\frontend\maid-vrm\` にコピーされます（変わっていなければコピーしない）。元のファイルが無いと Live2D に戻るので、消さないでください。
 - 初回だけ、表示に使うライブラリ（three.js と three-vrm、数 MB）をダウンロードします。
 - 呼吸・まばたき・こちらを見る・声に合わせた口の動きをします。表情の変化はまだありません。
 - Live2D は見えないようにして裏で動かしています（画面の本体が Live2D 経由で声を再生するため。消すと声が出なくなる）。
