@@ -166,6 +166,10 @@ class ProxyTest(unittest.TestCase):
         finally:
             proxy.shutdown()
 
+    def test_preload(self):
+        llm_proxy.preload(f"http://127.0.0.1:{self.ollama.server_port}", "gemma")
+        self.assertEqual(FakeOllama.requests, [("/api/generate", {"model": "gemma", "keep_alive": -1})])
+
     def test_upstream_down_gives_502(self):
         proxy = serve(llm_proxy.make_handler("http://127.0.0.1:1"))
         try:

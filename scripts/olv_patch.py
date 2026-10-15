@@ -1,14 +1,15 @@
-"""maid が Open-LLM-VTuber (v1.2.1) に当てる修正をまとめたもの。何度実行しても同じ結果になる。
+r"""maid が Open-LLM-VTuber (v1.2.1) に当てる修正をまとめたもの。何度実行しても同じ結果になる。
 
 本体は改造しない方針だが、設定で変えられない部分だけここで直す:
 
-    frontend      画面の初期設定 (maid-defaults.js) を書き、画面のマイク設定の不具合を直す
-    conf          conf.yaml を maid の形にそろえる（使わない設定を消し、音声認識を ReazonSpeech に。キャラの設定はそのまま）
+    prepare       起動のたびに実行する:
+                    - 画面の初期設定 (maid-defaults.js) を書き、画面のマイク設定の不具合を直す
+                    - conf.yaml を maid の形にそろえる（使わない設定を消し、音声認識を ReazonSpeech に。キャラの設定はそのまま）
     extract-asr   ReazonSpeech のアーカイブから必要なファイルだけを取り出す
 
-Open-LLM-VTuber のライブラリ（ruamel.yaml）を使うので、その環境で動かす:
+Open-LLM-VTuber のライブラリ（ruamel.yaml）を使うので、その Python で動かす:
 
-    uv run --project runtime/Open-LLM-VTuber python scripts/olv_patch.py conf --olv runtime/Open-LLM-VTuber
+    runtime\Open-LLM-VTuber\.venv\Scripts\python.exe scripts\olv_patch.py prepare --olv runtime\Open-LLM-VTuber --ws-url ws://127.0.0.1:12394/client-ws
 """
 
 from __future__ import annotations
@@ -197,24 +198,22 @@ def extract_reazon(archive: Path, dest: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Open-LLM-VTuber への maid の修正")
     sub = p.add_subparsers(dest="cmd", required=True)
-    f = sub.add_parser("frontend")
+    f = sub.add_parser("prepare")
     f.add_argument("--olv", required=True)
     f.add_argument("--ws-url", required=True)
     f.add_argument("--base-url", default="http://127.0.0.1:12393")
     f.add_argument("--silence-ms", type=int, default=900)
-    c = sub.add_parser("conf")
-    c.add_argument("--olv", required=True)
-    c.add_argument("--template", default=str(Path(__file__).resolve().parent.parent / "config" / "open-llm-vtuber" / "conf.yaml"))
+    f.add_argument("--template", default=str(Path(__file__).resolve().parent.parent / "config" / "open-llm-vtuber" / "conf.yaml"))
     e = sub.add_parser("extract-asr")
     e.add_argument("archive")
     e.add_argument("--olv", required=True)
     args = p.parse_args(argv)
 
     olv = Path(args.olv)
-    if args.cmd == "frontend":
+    if args.cmd == "prepare":
         changed = patch_frontend(olv / "frontend", args.ws_url, args.base_url, args.silence_ms)
-        print("画面の設定: " + (", ".join(changed) + " を更新" if changed else "変更なし"))
-    elif args.cmd == "conf":
+        if changed:
+            print("画面の設定を更新しました: " + ", ".join(changed))
         result = patch_conf(olv / "conf.yaml", Path(args.template))
         if result == "rebuilt":
             print("conf.yaml から使わない設定を消しました（キャラの設定はそのまま。元のファイルは conf.yaml.before-maid）")

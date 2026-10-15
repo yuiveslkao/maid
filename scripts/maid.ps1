@@ -31,6 +31,9 @@ $P = @{
     OllamaModel = "$Rt\ollama-models"
     AivisDir    = "$Rt\aivisspeech-engine"
     Olv         = "$Rt\Open-LLM-VTuber"
+    OlvPy       = "$Rt\Open-LLM-VTuber\.venv\Scripts\python.exe"   # Open-LLM-VTuber の Python（setup の uv sync で作る）
+    MaidVenv    = "$Rt\maid-venv"
+    MaidPy      = "$Rt\maid-venv\Scripts\python.exe"                # maid の部品の Python
     Downloads   = "$Rt\downloads"
     Logs        = "$Rt\logs"
 }
@@ -44,12 +47,14 @@ $Ports = @{
     Olv        = 12393
     Gate       = 12394
 }
+$Ports["brain-proxy"] = $Ports.BrainProxy; $Ports["tts-bridge"] = $Ports.TtsBridge; $Ports["discord-gate"] = $Ports.Gate
 $OlvUrl = "http://127.0.0.1:$($Ports.Olv)"
 $OlvTag = "v1.2.1"
 $OlvFrontendCommit = "06a659b114fff788cf0daaa86e484576db4975bf"   # v1.2.1 が参照しているビルド済み画面
 $PyVer = "3.10"   # maid の部品も Open-LLM-VTuber と同じ Python を使う（Python を 2 つ入れないため）
 $ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"   # 音声認識のモデル（日本語専用）
-$SearchPackages = @("ddgs", "trafilatura")                          # 検索と本文の抜き出し
+# maid の部品が使うライブラリ（検索・本文の抜き出し・PDF・Discord ゲート）
+$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13")
 
 # ------------------------------------------------------------------ 設定（maid.settings.json）
 # 無ければ config\maid.settings.default.json をコピーして作る。書かれていない項目は既定値を使う
@@ -129,28 +134,43 @@ function Find-AivisExe {
     return $null
 }
 
-# Open-LLM-VTuber への修正（scripts\olv_patch.py）。conf.yaml を扱うので Open-LLM-VTuber の環境で動かす
+# Open-LLM-VTuber への修正（scripts\olv_patch.py）。conf.yaml を扱うので Open-LLM-VTuber の Python で動かす
+# （uv run --project は毎回ライブラリの確認をして数秒かかるので、Python を直接使う）
 function Invoke-OlvPatch([string[]]$PatchArgs) {
     # 出力は画面に出すだけにする（関数の戻り値に混ざらないように）
-    & $P.Uv run --project $P.Olv python "$Root\scripts\olv_patch.py" @($PatchArgs + @("--olv", $P.Olv)) | Out-Host
+    & $P.OlvPy "$Root\scripts\olv_patch.py" @($PatchArgs + @("--olv", $P.Olv)) | Out-Host
     return ($LASTEXITCODE -eq 0)
+}
+
+# maid の部品用の Python 環境（runtime\maid-venv）。ライブラリの一覧が変わったときだけ入れ直す
+function Install-MaidVenv {
+    $stamp = "$($P.MaidVenv)\maid-packages.txt"
+    $want = $MaidPackages -join " "
+    if ((Test-Path $P.MaidPy) -and (Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $want)) { return }
+    Say "  maid の部品用のライブラリを入れます（初回だけ）" Cyan
+    if (-not (Test-Path $P.MaidPy)) {
+        & $P.Uv venv --python $PyVer $P.MaidVenv | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "maid の部品用の Python を作れませんでした。" }
+    }
+    & $P.Uv pip install --python $P.MaidPy @MaidPackages | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "maid の部品用のライブラリを入れられませんでした。" }
+    Set-Content -Path $stamp -Value $want -Encoding ASCII
 }
 
 # 裏で動く部品はウィンドウを出さず、出力を runtime\logs\<名前>.log に書く。
 # （コンソールに出すと、ウィンドウをクリックして「選択」状態になったとき部品ごと止まってしまうため）
 # start.bat のウィンドウにぶら下がるので、そこで Ctrl+C すると一緒に止まる
-function Start-Part([string]$Name, [string]$Exe, [string[]]$ArgList) {
+function Start-Part([string]$Name, [string]$Exe, [string[]]$ArgList, [string]$Dir = $Root) {
     New-Item -ItemType Directory -Force -Path $P.Logs | Out-Null
     $out = "$($P.Logs)\$Name.log"; $err = "$($P.Logs)\$Name.err.log"
     foreach ($f in @($out, $err)) { if (Test-Path $f) { Remove-Item -Force $f -ErrorAction SilentlyContinue } }
-    Start-Process -FilePath $Exe -ArgumentList $ArgList -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err | Out-Null
+    Start-Process -FilePath $Exe -ArgumentList $ArgList -WorkingDirectory $Dir -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err | Out-Null
 }
 
-# maid の部品（Python 製）を runtime\ の Python で起動する。引数に空白が入りうるものは呼ぶ側で引用符を付ける
-function Start-PyPart([string]$Name, [string]$Script, [string[]]$ScriptArgs, [string[]]$With = @()) {
-    $a = @("run", "--no-project", "--python", $PyVer)
-    foreach ($w in $With) { $a += @("--with", "`"$w`"") }   # websockets>=13 の > を引用符で守る
-    Start-Part $Name $P.Uv ($a + @("python", "`"$Script`"") + $ScriptArgs)
+# maid の部品（Python 製）を起動する。引数に空白が入りうるものは呼ぶ側で引用符を付ける
+function Start-PyPart([string]$Name, [string]$Script, [string[]]$ScriptArgs) {
+    if (Test-Port $Ports[$Name]) { return }
+    Start-Part $Name $P.MaidPy (@("`"$Script`"") + $ScriptArgs)
 }
 
 function Stop-Maid {
@@ -169,39 +189,36 @@ function Test-ModelIn([string[]]$Names) {
     return ($Names -contains $Model) -or ($Names -contains "$($Model):latest")
 }
 
-# ------------------------------------------------------------------ 部品の起動
+# ------------------------------------------------------------------ 部品の起動（待たずに起動だけする。待つのは Wait-Parts）
 function Start-OllamaServer {
     if (Test-Port $Ports.Ollama) { return }
     if (-not (Test-Path $P.Ollama)) { throw "Ollama がありません。先に setup.bat を実行してください。" }
     Start-Part "ollama" $P.Ollama @("serve")
-    if (-not (Wait-Port $Ports.Ollama 60 "Ollama")) { throw "Ollama が起動しませんでした（.\maid.bat logs ollama）。" }
 }
 
-function Start-Brain {
+function Start-Parts {
     Start-OllamaServer
-    if (Test-Port $Ports.BrainProxy) { return }
+    # 頭脳の中継は起動するとすぐモデルを GPU に読み込ませる（Open-LLM-VTuber の起動と並行して進む）
     Start-PyPart "brain-proxy" "$Svc\llm_proxy.py" @("--port", "$($Ports.BrainProxy)", "--ollama", "http://127.0.0.1:$($Ports.Ollama)",
-        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"") $SearchPackages
-    if (-not (Wait-Port $Ports.BrainProxy 120 "頭脳の中継")) { throw "頭脳の中継が起動しませんでした（.\maid.bat logs brain-proxy）。" }
-}
-
-function Start-Aivis {
-    if (Test-Port $Ports.Aivis) { return }
-    $exe = Find-AivisExe
-    if (-not $exe) { throw "AivisSpeech Engine がありません。先に setup.bat を実行してください。" }
-    Start-Part "aivisspeech" $exe @("--load_all_models", "--port", "$($Ports.Aivis)")
-    # 初回はモデル（約 1GB）をダウンロードするので長めに待つ
-    if (-not (Wait-Port $Ports.Aivis 900 "AivisSpeech Engine（初回は数分かかります）")) { throw "AivisSpeech Engine が起動しませんでした（.\maid.bat logs aivisspeech）。" }
-}
-
-function Start-TtsBridge {
-    if (Test-Port $Ports.TtsBridge) { return }
+        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"")
+    if (-not (Test-Port $Ports.Aivis)) {
+        $exe = Find-AivisExe
+        if (-not $exe) { throw "AivisSpeech Engine がありません。先に setup.bat を実行してください。" }
+        # 全部の声のモデルは読み込まない（使う声は声の中継が起動時に 1 回しゃべらせて読み込む）
+        Start-Part "aivisspeech" $exe @("--port", "$($Ports.Aivis)")
+    }
     Start-PyPart "tts-bridge" "$Svc\tts_bridge.py" @("--port", "$($Ports.TtsBridge)", "--aivis-url", "http://127.0.0.1:$($Ports.Aivis)", "--voice", "`"$Voice`"", "--speed", "$Speed")
+    Start-PyPart "discord-gate" "$Svc\discord_gate.py" @("--port", "$($Ports.Gate)", "--backend", "ws://127.0.0.1:$($Ports.Olv)")
 }
 
-function Start-Gate {
-    if (Test-Port $Ports.Gate) { return }
-    Start-PyPart "discord-gate" "$Svc\discord_gate.py" @("--port", "$($Ports.Gate)", "--backend", "ws://127.0.0.1:$($Ports.Olv)") @("websockets>=13")
+# 起動を待つ。どれかが起動しなければ、見るべきログの名前を出して止める
+function Wait-Parts {
+    foreach ($w in @(@("Ollama", $Ports.Ollama, 60, "ollama"), @("頭脳の中継", $Ports.BrainProxy, 60, "brain-proxy"),
+                     @("AivisSpeech Engine（初回は数分かかります）", $Ports.Aivis, 900, "aivisspeech"),
+                     @("声の中継", $Ports.TtsBridge, 60, "tts-bridge"),
+                     @("Open-LLM-VTuber（初回は数分かかります）", $Ports.Olv, 1200, "open-llm-vtuber"))) {
+        if (-not (Wait-Port $w[1] $w[2] $w[0])) { throw "$($w[0]) が起動しませんでした（.\maid.bat logs $($w[3])）。" }
+    }
 }
 
 # 日本語の音声認識モデル (ReazonSpeech, sherpa-onnx 版) を取ってくる（初回だけ）
@@ -214,11 +231,6 @@ function Install-ReazonSpeech {
     Remove-Item -Force $archive -ErrorAction SilentlyContinue   # 使うのは展開したものだけ
 }
 
-function Set-Frontend([string]$WsUrl) {
-    if (-not (Invoke-OlvPatch @("frontend", "--ws-url", $WsUrl, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs"))) {
-        Say "  画面の初期設定を書けませんでした（マイク設定は画面から手で変えてください）" Yellow
-    }
-}
 
 # ゲート経由で本体につながり、最初のメッセージが返ってくるか確かめる
 function Test-Gate {
@@ -282,12 +294,11 @@ function Invoke-Setup {
     Say "[5/6] ライブラリ（数 GB。初回は時間がかかります）" Cyan
     Push-Location $P.Olv
     try { & $P.Uv sync; if ($LASTEXITCODE -ne 0) { throw "uv sync に失敗しました。" } } finally { Pop-Location }
-    $with = @(); foreach ($w in @($SearchPackages + "websockets>=13")) { $with += @("--with", $w) }
-    & $P.Uv run --no-project --python $PyVer @with python -c "print('maid の部品用 Python OK')"
-    if ($LASTEXITCODE -ne 0) { throw "maid の部品用のライブラリを入れられませんでした。" }
+    Install-MaidVenv
 
     Say "[6/6] 頭脳のモデル ($Model)" Cyan
     Start-OllamaServer
+    if (-not (Wait-Port $Ports.Ollama 60 "Ollama")) { throw "Ollama が起動しませんでした（.\maid.bat logs ollama）。" }
     # 大きいので途中で通信が切れることがある。ollama pull は続きから再開できるので数回やり直す
     for ($i = 1; $i -le 5; $i++) {
         & $P.Ollama pull $Model
@@ -302,33 +313,27 @@ function Invoke-Setup {
 
 # ------------------------------------------------------------------ start
 function Invoke-Start {
-    if (-not (Test-Path "$($P.Olv)\run_server.py")) { throw "Open-LLM-VTuber がありません。先に setup.bat を実行してください。" }
-    Say "頭脳（Ollama + 中継）" Cyan; Start-Brain
-    Say "声（AivisSpeech + 中継）" Cyan; Start-Aivis; Start-TtsBridge
-    Say "Discord ゲート" Cyan; Start-Gate
-
-    Say "Open-LLM-VTuber の準備" Cyan
-    Set-Frontend "ws://127.0.0.1:$($Ports.Olv)/client-ws"
+    if (-not (Test-Path $P.OlvPy)) { throw "Open-LLM-VTuber がありません。先に setup.bat を実行してください。" }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Install-MaidVenv
     Install-ReazonSpeech
-    if (-not (Invoke-OlvPatch @("conf"))) { Say "  conf.yaml を確認できませんでした（今の設定のまま起動します）" Yellow }
+    Say "部品を起動しています（頭脳・声・Discord ゲート）" Cyan
+    Start-Parts
 
-    Say "Open-LLM-VTuber" Cyan
-    if (-not (Test-Port $Ports.Olv)) {
-        Start-Part "open-llm-vtuber" $P.Uv @("run", "--project", "`"$($P.Olv)`"", "--directory", "`"$($P.Olv)`"", "run_server.py")
-    }
-    if (-not (Wait-Port $Ports.Olv 1200 "Open-LLM-VTuber（初回は数分かかります）")) {
-        throw "Open-LLM-VTuber が起動しませんでした（.\maid.bat logs open-llm-vtuber）。"
-    }
-
-    # 画面がつなぐ先: Discord ゲートが本体まで通じていればゲート、だめなら本体に直結のまま
-    if ((Wait-Port $Ports.Gate 60) -and (Test-Gate)) {
-        Set-Frontend "ws://127.0.0.1:$($Ports.Gate)/client-ws"
-        Say "  Discord ゲート: 使用中（Discord で通話中は声に反応しません）" Green
+    # 画面がつなぐ先: Discord ゲートが起動していればゲート、だめなら本体に直結
+    $ws = "ws://127.0.0.1:$($Ports.Olv)/client-ws"
+    if (Wait-Port $Ports.Gate 20) {
+        $ws = "ws://127.0.0.1:$($Ports.Gate)/client-ws"
     } else {
-        Say "  Discord ゲート: うまく動かないので使わずに直結します（.\maid.bat logs discord-gate）" Yellow
+        Say "  Discord ゲートが起動しないので、使わずに直結します（.\maid.bat logs discord-gate）" Yellow
     }
+    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs"))) {
+        Say "  画面と conf.yaml の準備に失敗しました（今の設定のまま起動します）" Yellow
+    }
+    if (-not (Test-Port $Ports.Olv)) { Start-Part "open-llm-vtuber" $P.OlvPy @("run_server.py") $P.Olv }
+    Wait-Parts
 
-    Say "  頭脳: $Model / 声: $Voice / 検索: $Search" Gray
+    Say ("  頭脳: $Model / 声: $Voice / 検索: $Search （起動 {0:N0} 秒）" -f $sw.Elapsed.TotalSeconds) Gray
     # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）。?t= は古いページを使い回させないため
     Start-Process "msedge.exe" "--app=$OlvUrl/?t=$([DateTimeOffset]::Now.ToUnixTimeSeconds())"
     Say "`n準備完了。画面を閉じても裏の部品は動き続けます。ログ: .\maid.bat logs <名前>" Green
@@ -432,6 +437,7 @@ function Invoke-Clean {
     # 使っていない頭脳のモデル（試したモデルなど。1 つ数 GB）
     if (Test-Path $P.Ollama) {
         Start-OllamaServer
+        if (-not (Wait-Port $Ports.Ollama 60 "Ollama")) { throw "Ollama が起動しませんでした（.\maid.bat logs ollama）。" }
         $unused = @(Get-OllamaModels | Where-Object { $_ -ne $Model -and $_ -ne "$($Model):latest" })
         if ($unused.Count -gt 0) {
             Say "使っていない頭脳のモデル: $($unused -join ', ')" Yellow

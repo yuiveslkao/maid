@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import urllib.parse
 from datetime import datetime
@@ -37,12 +38,16 @@ FOLLOWUP_TURNS = 2        # 調べたあと、続きの質問に前回の結果�
 FOLLOWUP_SECONDS = 600    # 〃 の期限
 
 WEEKDAYS = "月火水木金土日"
-SOURCES_RE = re.compile(r"\n?\[出典: [^\]]*\]")
+# 過去の返事に付けた出典（今の形と前の形）
+SOURCES_RE = re.compile(r"\s*(<think>出典: .*?</think>|\[出典: [^\]]*\])", re.S)
+CLOCK_NOTE = "現在の日時は {now}。時刻・日付・曜日を聞かれたら、この日時を使って正確に答える（調べなくてよい）。"
 SEARCH_NOTE = ("（補足）Web 検索の結果が渡されたときは、それを使って最新の情報を答えてよい。"
                "結果が渡されていないのに、天気・ニュース・日付などの最新情報を推測で答えない。")
-QUERY_PROMPT = ("次の発言について、Web 検索に使う短い日本語の検索語を 1 行だけ出力してください。"
+QUERY_PROMPT = ("あなたは検索語を作る係です。会話の流れを踏まえて、最後の発言で調べたいことを Web 検索するための"
+                "短い日本語の検索語を 1 行だけ出力してください。「調べて」だけのときは、その前の話題を調べる。"
                 "説明や記号は付けない。会話相手の名前や家族の情報など、個人的な情報は入れない。"
                 "検索の必要がなければ「なし」とだけ出力する。")
+QUERY_CONTEXT_MESSAGES = 6  # 検索語を作るときに見せる直前の発言の数
 STOP_EVENT = b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
 
 
@@ -94,13 +99,17 @@ def sse_text(text: str) -> bytes:
     return b"data: " + json.dumps(ev, ensure_ascii=False).encode("utf-8") + b"\n\n"
 
 
+def text_of(message: dict) -> str:
+    c = message.get("content")
+    if isinstance(c, list):
+        return "".join(p.get("text", "") for p in c if isinstance(p, dict))
+    return c if isinstance(c, str) else ""
+
+
 def last_user_text(messages: list) -> str:
     for m in reversed(messages):
         if m.get("role") == "user":
-            c = m.get("content")
-            if isinstance(c, list):  # [{"type": "text", "text": ...}] の形
-                return "".join(p.get("text", "") for p in c if isinstance(p, dict))
-            return c if isinstance(c, str) else ""
+            return text_of(m)
     return ""
 
 
@@ -121,6 +130,59 @@ def add_note(messages: list, note: str) -> list:
             out[k] = {**m, "content": m["content"].rstrip() + "\n\n" + note}
             return out
     return [{"role": "system", "content": note}] + out
+
+
+def clean_history(messages: list, filler: str) -> list:
+    """過去の返事から出典と「ちょっと調べるね。」を取り除く（残すと頭脳が真似して自分で書き始める）。"""
+    out = []
+    for m in messages:
+        if m.get("role") == "assistant" and isinstance(m.get("content"), str):
+            c = SOURCES_RE.sub("", m["content"])
+            if filler and c.startswith(filler):
+                c = c[len(filler):]
+            m = {**m, "content": c}
+        out.append(m)
+    return out
+
+
+def query_request(messages: list) -> list:
+    """検索語づくりに渡すメッセージ（直前の会話を 1 つの文章にまとめる）。"""
+    talk = [m for m in messages if m.get("role") in ("user", "assistant")][-QUERY_CONTEXT_MESSAGES:]
+    lines = [("相手: " if m["role"] == "user" else "キャラ: ") + text_of(m).strip() for m in talk]
+    if lines:
+        lines[-1] = "最後の発言: " + text_of(talk[-1]).strip()
+    return [{"role": "system", "content": QUERY_PROMPT}, {"role": "user", "content": "\n".join(lines)}]
+
+
+def fallback_query(messages: list) -> str:
+    """頭脳が検索語を作れなかったときの検索語。「調べて」だけなら、その前の相手の発言から作る。"""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            q = web_search.fallback_query(text_of(m))
+            if q:
+                return q
+    return ""
+
+
+def preload(upstream: str, model: str) -> None:
+    """起動してすぐ、頭脳のモデルを GPU に読み込ませておく（最初の返事が遅くならないように）。"""
+    up = urllib.parse.urlparse(upstream)
+    body = json.dumps({"model": model, "keep_alive": -1}).encode()
+    for attempt in range(120):
+        try:
+            conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=600)
+            started = time.perf_counter()
+            conn.request("POST", "/api/generate", body=body, headers={"Content-Type": "application/json"})
+            res = conn.getresponse()
+            res.read()
+            conn.close()
+            if res.status == 200:
+                log.info("モデルを読み込みました (%.1f 秒)", time.perf_counter() - started)
+            else:
+                log.warning("モデルを読み込めませんでした (%s)。maid.settings.json の model と setup を確認してください", res.status)
+            return
+        except OSError:
+            time.sleep(1)  # Ollama の起動待ち
 
 
 def make_handler(upstream: str, model: str | None = None, search_mode: str = "off", search_filler: str = "",
@@ -180,10 +242,10 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             self._end()
 
         # ---------------- 検索
-        def _make_query(self, req: dict, text: str) -> str | None:
-            """頭脳に短い検索語を作らせる。作れなければ発言から作る。「なし」なら None。"""
+        def _make_query(self, req: dict, msgs: list) -> str | None:
+            """頭脳に、直前の会話を踏まえた短い検索語を作らせる。作れなければ発言から作る。「なし」なら None。"""
             q = with_defaults({"model": req.get("model", ""), "stream": False, "max_tokens": 40, "temperature": 0.2,
-                               "messages": [{"role": "system", "content": QUERY_PROMPT}, {"role": "user", "content": text}]}, model)
+                               "messages": query_request(msgs)}, model)
             line = ""
             try:
                 conn, res = self._open(json.dumps(q, ensure_ascii=False).encode("utf-8"), "/v1/chat/completions", "POST")
@@ -196,27 +258,26 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                 pass
             if line in ("なし", "無し", "NONE", "none"):
                 return None
-            return line[:60] or web_search.fallback_query(text)
+            return line[:60] or fallback_query(msgs)
 
         def _augment(self, req: dict) -> tuple[dict, bytes]:
             """日時と、要るなら検索結果を差し込む。戻り値は (新しいリクエスト, 返事の最後に足す出典)。"""
-            # 過去の返事に付けた出典は頭脳に見せない（ふだんの返事でも真似して書き始めるため）
-            msgs = [{**m, "content": SOURCES_RE.sub("", m["content"])}
-                    if m.get("role") == "assistant" and isinstance(m.get("content"), str) else m
-                    for m in req["messages"]]
-            now = datetime.now()
-            note = f"現在の日時: {now:%Y年%m月%d日}（{WEEKDAYS[now.weekday()]}）{now:%H:%M}"
+            msgs = clean_history(req["messages"], search_filler)
+            history = list(msgs)
             if search_mode != "off":
-                note += "\n" + SEARCH_NOTE
-            msgs = add_note(msgs, note)
+                msgs = add_note(msgs, SEARCH_NOTE)
+            # 今の日時は最後の発言のすぐ前に置く（キャラ設定の後ろに足すより、小さいモデルでも使ってくれる）
+            now = datetime.now()
+            msgs = insert_before_last_user(msgs, CLOCK_NOTE.format(
+                now=f"{now:%Y年%m月%d日}（{WEEKDAYS[now.weekday()]}曜日）{now.hour}時{now.minute}分"))
             text = last_user_text(msgs)
             if req.get("stream") and web_search.needs_search(text, search_mode):
                 if search_filler:
                     self._start()
                     self._chunk(sse_text(search_filler))  # 調べている間に読み上げが始まる
-                query = self._make_query(req, text)
+                query = self._make_query(req, history)
                 if query is None and web_search.needs_search(text, "explicit"):  # はっきり頼まれたら必ず調べる
-                    query = web_search.fallback_query(text)
+                    query = fallback_query(history)
                 if query:
                     ctx = search_fn(query, SEARCH_PAGES)
                     log.info("検索「%s」→ %s", query, ", ".join(r.site for r in ctx.results) or "見つからず")
@@ -329,6 +390,8 @@ def main(argv: list[str] | None = None) -> None:
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     server = ThreadingHTTPServer((a.host, a.port), make_handler(a.ollama, a.model, a.search, a.search_filler))
+    if a.model:
+        threading.Thread(target=preload, args=(a.ollama, a.model), daemon=True).start()
     log.info("頭脳の中継: http://%s:%d  →  %s（モデル: %s / 検索: %s）", a.host, a.port, a.ollama, a.model or "そのまま", a.search)
     try:
         server.serve_forever()

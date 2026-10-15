@@ -21,10 +21,37 @@ class WebSearchTest(unittest.TestCase):
         self.assertTrue(web_search.needs_search("オムライスの作り方検索して", "explicit"))
         self.assertFalse(web_search.needs_search("ぱぱ、おはよう"))
         self.assertFalse(web_search.needs_search("明日の天気調べて", "off"))
+        self.assertTrue(web_search.needs_search("二千二十六年のノーベル文学賞は誰"))  # 最近の年
+        # 今の日時は調べない（頭脳の中継が渡している）
+        self.assertFalse(web_search.needs_search("今の時間を調べて"))
+        self.assertFalse(web_search.needs_search("今日って何曜日？"))
+        self.assertTrue(web_search.needs_search("駅前のパン屋の営業時間調べて"))
 
     def test_fallback_query(self):
         self.assertEqual(web_search.fallback_query("ねえ、東京の天気について調べてくれる？"), "東京の天気")
         self.assertEqual(web_search.fallback_query("ポケモンの新作ググって"), "ポケモンの新作")
+        self.assertEqual(web_search.fallback_query("調べて"), "")
+        msgs = [{"role": "user", "content": "ノーベル文学賞は誰"}, {"role": "assistant", "content": "わかんない"},
+                {"role": "user", "content": [{"type": "text", "text": "調べて"}]}]
+        self.assertEqual(llm_proxy.fallback_query(msgs), "ノーベル文学賞は誰")
+
+    def test_sources_are_not_read_aloud(self):
+        ctx = SearchContext("q", [Result("a", "https://time.is/ja/Japan", ""), Result("b", "https://ja.example.com/x", "")])
+        # Open-LLM-VTuber は <think> の中を読み上げない（[ ] だと URL の「.」で文が切られて読み上げられた）
+        self.assertEqual(web_search.sources_line(ctx), "<think>出典: https://time.is/ja/Japan / https://ja.example.com/x</think>")
+
+    def test_pdf_text(self):
+        try:
+            from pypdf import PdfWriter
+        except ImportError:
+            self.skipTest("pypdf なし")
+        import io
+
+        w = PdfWriter()
+        w.add_blank_page(100, 100)
+        buf = io.BytesIO()
+        w.write(buf)
+        self.assertEqual(web_search.pdf_text(buf.getvalue()), "")  # 文字の無い PDF でも落ちない
 
     def test_search_reads_top_pages_only(self):
         hits = [Result(f"t{i}", f"https://example{i}.com/a", f"snippet{i}") for i in range(6)]
@@ -119,10 +146,10 @@ class ProxySearchTest(unittest.TestCase):
     def test_search_flow(self):
         reply = self.chat("明日の東京の天気調べて")
         # 先に一言 → 頭脳の返事 → 最後に出典（[ ] の中は読み上げられない）
-        self.assertEqual(reply, "ちょっと調べるね。晴れだって！\n[出典: https://tenki.example/tokyo]")
+        self.assertEqual(reply, "ちょっと調べるね。晴れだって！<think>出典: https://tenki.example/tokyo</think>")
         self.assertEqual(self.queries, ["東京 明日 天気"])
         sent = FakeOllama.requests[-1]["messages"]
-        self.assertIn("現在の日時", sent[0]["content"])
+        self.assertIn("現在の日時", sent[-3]["content"])
         self.assertEqual(sent[-2]["role"], "system")
         self.assertIn("明日の東京は晴れ。", sent[-2]["content"])
         self.assertEqual(sent[-1]["role"], "user")
@@ -131,8 +158,19 @@ class ProxySearchTest(unittest.TestCase):
         self.assertEqual(self.chat("おはよう、ぱぱだよ"), "晴れだって！")
         self.assertEqual(self.queries, [])
         sent = FakeOllama.requests[-1]["messages"]
-        self.assertEqual(len(sent), 2)
-        self.assertIn("現在の日時", sent[0]["content"])
+        self.assertEqual([m["role"] for m in sent], ["system", "system", "user"])
+        self.assertIn("現在の日時", sent[1]["content"])  # 最後の発言のすぐ前
+
+    def test_clock_question_is_not_searched(self):
+        self.chat("今の時間を調べて")
+        self.assertEqual(self.queries, [])
+        self.assertIn("時刻・日付・曜日を聞かれたら", FakeOllama.requests[-1]["messages"][-2]["content"])
+
+    def test_query_uses_previous_turns(self):
+        self.chat("調べて", [{"role": "user", "content": "二千二十六年のノーベル文学賞は誰"}, {"role": "assistant", "content": "わかんない。"}])
+        self.assertEqual(self.queries, ["東京 明日 天気"])
+        query_req = [r for r in FakeOllama.requests if not r.get("stream")][0]
+        self.assertIn("ノーベル文学賞", query_req["messages"][-1]["content"])
 
     def test_followup_reuses_last_results_and_hides_old_sources(self):
         first = self.chat("明日の東京の天気調べて")
@@ -141,7 +179,7 @@ class ProxySearchTest(unittest.TestCase):
         self.assertEqual(self.queries, ["東京 明日 天気"])  # 2 回目は検索しない
         self.assertTrue(any("前回の検索結果" in m["content"] for m in sent if m["role"] == "system"))
         assistant = [m["content"] for m in sent if m["role"] == "assistant"][0]
-        self.assertNotIn("出典", assistant)
+        self.assertEqual(assistant, "晴れだって！")  # 出典と「ちょっと調べるね。」は見せない
 
 
 if __name__ == "__main__":
