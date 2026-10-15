@@ -5,6 +5,8 @@ r"""maid が Open-LLM-VTuber (v1.2.1) に当てる修正をまとめたもの。
     prepare       起動のたびに実行する:
                     - 画面の初期設定 (maid-defaults.js) を書き、画面のマイク設定の不具合を直す
                     - conf.yaml を maid の形にそろえる（使わない設定を消し、音声認識を ReazonSpeech に。キャラの設定はそのまま）
+                    - 3D モデル (VRM) を表示する設定（frontend/maid-vrm.js を画面に読み込ませる）
+    extract-vrm-libs  3D 表示に使うライブラリ（three.js / three-vrm）を npm の配布物から取り出す
     extract-asr   ReazonSpeech のアーカイブから必要なファイルだけを取り出す
 
 Open-LLM-VTuber のライブラリ（ruamel.yaml）を使うので、その Python で動かす:
@@ -15,12 +17,16 @@ Open-LLM-VTuber のライブラリ（ruamel.yaml）を使うので、その Pyth
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tarfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 # ------------------------------------------------------------------ 画面
 
@@ -44,7 +50,30 @@ FRONTEND_JS = """// maid が起動のたびに書き換えるファイル（scri
     ls.setItem("vadSettings", JSON.stringify(vad));
   }} catch (e) {{}}
 }})();
+// 3D モデル（maid.settings.json の vrm。null なら Live2D のまま）
+window.MAID_VRM = {vrm};
 """
+
+# 3D 表示（frontend/maid-vrm.js）が使うライブラリ。npm の配布物（.tgz）から必要なファイルだけを取り出す
+VRM_DIR = "maid-vrm"
+VRM_LIBS = {
+    "three": {
+        "package/build/three.module.js": "three.module.js",
+        "package/build/three.core.js": "three.core.js",
+        "package/examples/jsm/loaders/GLTFLoader.js": "addons/loaders/GLTFLoader.js",
+        "package/examples/jsm/utils/BufferGeometryUtils.js": "addons/utils/BufferGeometryUtils.js",
+        "package/examples/jsm/utils/SkeletonUtils.js": "addons/utils/SkeletonUtils.js",
+        "package/LICENSE": "LICENSE-three.txt",
+    },
+    "three-vrm": {
+        "package/lib/three-vrm.module.min.js": "three-vrm.module.min.js",
+        "package/LICENSE": "LICENSE-three-vrm.txt",
+    },
+}
+IMPORT_MAP = {"imports": {"three": f"./{VRM_DIR}/lib/three.module.js", "three/addons/": f"./{VRM_DIR}/lib/addons/",
+                          "@pixiv/three-vrm": f"./{VRM_DIR}/lib/three-vrm.module.min.js"}}
+VRM_BLOCK_RE = re.compile(r"\n?\s*<!-- maid-vrm -->.*?<!-- /maid-vrm -->", re.S)
+DEFAULTS_TAG_RE = re.compile(r'<script src="\./maid-defaults\.js(\?v=\w+)?"></script>')
 
 # 画面の本体 (assets/main-*.js) のマイク設定の初期値を「止めない」に直す。
 # 初期値が「止める」のままだと、設定画面を閉じたときにその値で上書き保存されてしまう（v1.2.1 の不具合）
@@ -65,21 +94,85 @@ def _write_if_changed(path: Path, text: str) -> bool:
     return True
 
 
-def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int) -> list[str]:
+def _short_hash(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()[:10]
+
+
+def vrm_libs_ready(front: Path) -> bool:
+    lib = front / VRM_DIR / "lib"
+    return all((lib / dest).exists() for files in VRM_LIBS.values() for dest in files.values())
+
+
+def extract_vrm_libs(archives: dict[str, Path], front: Path) -> None:
+    """npm の配布物から 3D 表示に要るファイルだけを frontend/maid-vrm/lib に取り出す。"""
+    lib = front / VRM_DIR / "lib"
+    for name, files in VRM_LIBS.items():
+        with tarfile.open(archives[name], "r:gz") as t:
+            for src, dest in files.items():
+                out = lib / dest
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with t.extractfile(src) as f:
+                    out.write_bytes(f.read())
+
+
+def _setup_vrm(front: Path, vrm: Path | None, view: str, changed: list[str]) -> dict | None:
+    """3D モデルと表示用のファイルを frontend/maid-vrm に置き、画面に渡す設定を返す。使わないなら片付けて None。"""
+    folder = front / VRM_DIR
+    model = folder / "model.vrm"
+    if vrm is None:
+        if model.exists():
+            model.unlink()
+            changed.append("model.vrm（削除）")
+        return None
+    if not vrm.is_file():
+        raise FileNotFoundError(f"3D モデルが見つかりません: {vrm}（maid.settings.json の vrm を確認してください）")
+    if not vrm_libs_ready(front):
+        raise FileNotFoundError("3D 表示用のライブラリがありません（start.bat がダウンロードします）")
+    folder.mkdir(parents=True, exist_ok=True)
+    st = vrm.stat()
+    if not model.exists() or model.stat().st_size != st.st_size or int(model.stat().st_mtime) != int(st.st_mtime):
+        shutil.copy2(vrm, model)  # 更新日時ごとコピーするので、次からは同じならコピーしない
+        changed.append("model.vrm")
+    js = (ROOT / "frontend" / "maid-vrm.js").read_text(encoding="utf-8")
+    if _write_if_changed(folder / "maid-vrm.js", js):
+        changed.append("maid-vrm.js")
+    # ?v= はファイルが変わったときだけ変わる（Edge に古いファイルを使い回させず、同じなら読み込みを速くする）
+    return {"url": f"./{VRM_DIR}/model.vrm?v={st.st_size}-{int(st.st_mtime)}", "view": view,
+            "script": f"./{VRM_DIR}/maid-vrm.js?v={_short_hash(js.encode())}"}
+
+
+def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int,
+                   vrm: Path | None = None, vrm_view: str = "bust") -> list[str]:
     """変更したファイル名の一覧を返す。"""
     index = front / "index.html"
     if not index.exists():
         raise FileNotFoundError(f"{index} がありません（setup.bat を実行してください）")
-    changed = []
+    changed: list[str] = []
+    try:
+        vrm_cfg = _setup_vrm(front, vrm, vrm_view, changed)
+    except FileNotFoundError as e:  # 3D が出せなくても、ほかの準備は続ける（Live2D のまま）
+        print(f"3D モデルを使えません: {e}", file=sys.stderr)
+        vrm_cfg = None
     frames = max(3, round(silence_ms / VAD_FRAME_MS))
-    js = FRONTEND_JS.format(ws_url=json.dumps(ws_url), base_url=json.dumps(base_url), redemption_frames=frames)
+    js = FRONTEND_JS.format(ws_url=json.dumps(ws_url), base_url=json.dumps(base_url), redemption_frames=frames,
+                            vrm=json.dumps(vrm_cfg and {"url": vrm_cfg["url"], "view": vrm_cfg["view"]}))
     if _write_if_changed(front / "maid-defaults.js", js):
         changed.append("maid-defaults.js")
 
     html = index.read_text(encoding="utf-8")
-    new_html = html
-    if "maid-defaults.js" not in new_html:
-        new_html = new_html.replace("<head>", '<head>\n    <script src="./maid-defaults.js"></script>', 1)
+    defaults_tag = f'<script src="./maid-defaults.js?v={_short_hash(js.encode())}"></script>'
+    if DEFAULTS_TAG_RE.search(html):
+        new_html = DEFAULTS_TAG_RE.sub(defaults_tag, html, count=1)
+    else:
+        new_html = html.replace("<head>", f"<head>\n    {defaults_tag}", 1)
+    # 3D 表示の読み込み。import map は画面の本体（module）より前に置く必要がある
+    new_html = VRM_BLOCK_RE.sub("", new_html)
+    if vrm_cfg:
+        block = ("\n    <!-- maid-vrm -->\n"
+                 f'    <script type="importmap">{json.dumps(IMPORT_MAP)}</script>\n'
+                 f'    <script type="module" src="{vrm_cfg["script"]}"></script>\n'
+                 "    <!-- /maid-vrm -->")
+        new_html = new_html.replace(defaults_tag, defaults_tag + block, 1)
 
     bundles = sorted((front / "assets").glob("main-*.js"))
     if bundles:
@@ -203,7 +296,13 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--ws-url", required=True)
     f.add_argument("--base-url", default="http://127.0.0.1:12393")
     f.add_argument("--silence-ms", type=int, default=900)
+    f.add_argument("--vrm", default="", help="3D モデル (.vrm) のパス。空なら Live2D のまま")
+    f.add_argument("--vrm-view", choices=("bust", "full"), default="bust", help="bust = 胸から上 / full = 全身")
     f.add_argument("--template", default=str(Path(__file__).resolve().parent.parent / "config" / "open-llm-vtuber" / "conf.yaml"))
+    v = sub.add_parser("extract-vrm-libs")
+    v.add_argument("three")
+    v.add_argument("three_vrm")
+    v.add_argument("--olv", required=True)
     e = sub.add_parser("extract-asr")
     e.add_argument("archive")
     e.add_argument("--olv", required=True)
@@ -211,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
 
     olv = Path(args.olv)
     if args.cmd == "prepare":
-        changed = patch_frontend(olv / "frontend", args.ws_url, args.base_url, args.silence_ms)
+        changed = patch_frontend(olv / "frontend", args.ws_url, args.base_url, args.silence_ms,
+                                 Path(args.vrm) if args.vrm else None, args.vrm_view)
         if changed:
             print("画面の設定を更新しました: " + ", ".join(changed))
         result = patch_conf(olv / "conf.yaml", Path(args.template))
@@ -219,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
             print("conf.yaml から使わない設定を消しました（キャラの設定はそのまま。元のファイルは conf.yaml.before-maid）")
         elif result:
             print("conf.yaml の音声認識を ReazonSpeech に直しました")
+    elif args.cmd == "extract-vrm-libs":
+        extract_vrm_libs({"three": Path(args.three), "three-vrm": Path(args.three_vrm)}, olv / "frontend")
+        print("3D 表示用のライブラリを展開しました")
     elif args.cmd == "extract-asr":
         extract_reazon(Path(args.archive), olv / "models" / REAZON_NAME)
         print("音声認識モデルを展開しました")

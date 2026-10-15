@@ -35,6 +35,7 @@ Open-LLM-VTuber 本体は改造せず、前後に中継を挟んだり、設定�
 | `services/web_search.py` | Web 検索（DuckDuckGo）とページ本文（PDF も）の抜き出し。外に出るのは検索語と開いたページだけ |
 | `services/tts_bridge.py` | 声の中継。AivisSpeech を OpenAI 互換の TTS として見せる |
 | `services/discord_gate.py` | Discord ゲート。Discord で通話中は声を本体に渡さない |
+| `frontend/maid-vrm.js` | 3D モデル（VRM）を画面に表示する |
 | `config/maid.settings.default.json` | `maid.settings.json`（いつも使う設定）の既定値 |
 | `config/open-llm-vtuber/conf.yaml` | Open-LLM-VTuber の設定の雛形（maid で使う項目だけ。setup で `runtime/` にコピーされる） |
 | `tests/` | テスト（`runtime\uv\uv.exe run --no-project --python 3.10 --with "websockets>=13" --with openai --with ruamel.yaml --with pyyaml --with pypdf python -m unittest discover -s tests`） |

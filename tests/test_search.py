@@ -31,6 +31,7 @@ class WebSearchTest(unittest.TestCase):
         self.assertEqual(web_search.fallback_query("ねえ、東京の天気について調べてくれる？"), "東京の天気")
         self.assertEqual(web_search.fallback_query("ポケモンの新作ググって"), "ポケモンの新作")
         self.assertEqual(web_search.fallback_query("調べて"), "")
+        self.assertEqual(web_search.find_urls("これ https://manabitimes.jp/math/4041 読める？"), ["https://manabitimes.jp/math/4041"])
         msgs = [{"role": "user", "content": "ノーベル文学賞は誰"}, {"role": "assistant", "content": "わかんない"},
                 {"role": "user", "content": [{"type": "text", "text": "調べて"}]}]
         self.assertEqual(llm_proxy.fallback_query(msgs), "ノーベル文学賞は誰")
@@ -38,7 +39,7 @@ class WebSearchTest(unittest.TestCase):
     def test_sources_are_not_read_aloud(self):
         ctx = SearchContext("q", [Result("a", "https://time.is/ja/Japan", ""), Result("b", "https://ja.example.com/x", "")])
         # Open-LLM-VTuber は <think> の中を読み上げない（[ ] だと URL の「.」で文が切られて読み上げられた）
-        self.assertEqual(web_search.sources_line(ctx), "<think>出典: https://time.is/ja/Japan / https://ja.example.com/x</think>")
+        self.assertEqual(web_search.sources_line(ctx), "<think>出典: https://time.is/ja/Japan / https://ja.example.com/x。</think>")
 
     def test_pdf_text(self):
         try:
@@ -125,9 +126,14 @@ class ProxySearchTest(unittest.TestCase):
             self.queries.append(query)
             return SearchContext(query, [Result("天気予報", "https://tenki.example/tokyo", "明日は晴れ", "明日の東京は晴れ。")])
 
+        def fake_read(urls):
+            self.read.append(urls)
+            return SearchContext("貼られたページ", [Result(u, u, "", "第1問 次の問いに答えよ。" if "pdf" in u else "") for u in urls])
+
+        self.read = []
         self.ollama = serve(FakeOllama)
         self.proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", search_mode="auto",
-                                                  search_filler="ちょっと調べるね。", search_fn=fake_search))
+                                                  search_filler="ちょっと調べるね。", search_fn=fake_search, read_fn=fake_read))
         try:
             from openai import OpenAI
         except ImportError:
@@ -146,7 +152,7 @@ class ProxySearchTest(unittest.TestCase):
     def test_search_flow(self):
         reply = self.chat("明日の東京の天気調べて")
         # 先に一言 → 頭脳の返事 → 最後に出典（[ ] の中は読み上げられない）
-        self.assertEqual(reply, "ちょっと調べるね。晴れだって！<think>出典: https://tenki.example/tokyo</think>")
+        self.assertEqual(reply, "ちょっと調べるね。晴れだって！<think>出典: https://tenki.example/tokyo。</think>")
         self.assertEqual(self.queries, ["東京 明日 天気"])
         sent = FakeOllama.requests[-1]["messages"]
         self.assertIn("現在の日時", sent[-3]["content"])
@@ -172,12 +178,21 @@ class ProxySearchTest(unittest.TestCase):
         query_req = [r for r in FakeOllama.requests if not r.get("stream")][0]
         self.assertIn("ノーベル文学賞", query_req["messages"][-1]["content"])
 
+    def test_pasted_url_is_read_directly(self):
+        reply = self.chat("https://example.jp/26.pdf\nこのページの一問めは読める？")
+        self.assertEqual(self.read, [["https://example.jp/26.pdf"]])
+        self.assertEqual(self.queries, [])  # 検索はしない
+        self.assertTrue(reply.endswith("<think>出典: https://example.jp/26.pdf。</think>"))
+        context = FakeOllama.requests[-1]["messages"][-2]["content"]
+        self.assertIn("相手が貼ったページ", context)
+        self.assertIn("第1問 次の問いに答えよ。", context)
+
     def test_followup_reuses_last_results_and_hides_old_sources(self):
         first = self.chat("明日の東京の天気調べて")
         self.chat("それって雨降る？", [{"role": "user", "content": "明日の東京の天気調べて"}, {"role": "assistant", "content": first}])
         sent = FakeOllama.requests[-1]["messages"]
         self.assertEqual(self.queries, ["東京 明日 天気"])  # 2 回目は検索しない
-        self.assertTrue(any("前回の検索結果" in m["content"] for m in sent if m["role"] == "system"))
+        self.assertTrue(any("前回の結果" in m["content"] for m in sent if m["role"] == "system"))
         assistant = [m["content"] for m in sent if m["role"] == "assistant"][0]
         self.assertEqual(assistant, "晴れだって！")  # 出典と「ちょっと調べるね。」は見せない
 

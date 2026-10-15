@@ -130,6 +130,22 @@ def pdf_text(data: bytes, limit: int = 1500, max_pages: int = 5) -> str:
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
+URL_RE = re.compile(r"https?://[^\s<>\"'「」（）()]+")
+
+
+def find_urls(text: str) -> list[str]:
+    return [u.rstrip(".,、。!！?？") for u in URL_RE.findall(text or "")]
+
+
+def read_pages(urls: list[str], fetch_fn: Callable[[str], str] | None = None, limit: int = 3000) -> SearchContext:
+    """チャットに貼られたページを直接読む（検索はしない）。"""
+    fetch_fn = fetch_fn or (lambda u: fetch_text(u, limit=limit))
+    urls = urls[:2]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(urls))) as pool:
+        texts = list(pool.map(fetch_fn, urls))
+    return SearchContext(query="貼られたページ", results=[Result(u, u, "", t) for u, t in zip(urls, texts)])
+
+
 def search(query: str, pages: int = 3, search_fn: Callable[[str, int], list[Result]] = ddg_search,
            fetch_fn: Callable[[str], str] = fetch_text) -> SearchContext:
     ctx = SearchContext(query=query)
@@ -148,12 +164,15 @@ def search(query: str, pages: int = 3, search_fn: Callable[[str, int], list[Resu
 
 def build_context(ctx: SearchContext, followup: bool = False) -> str:
     """頭脳に渡す「調べた結果」。ページの中身は資料として扱わせる（中の指示には従わせない）。"""
-    head = "（前回の検索結果。今の話題に関係があるときだけ使う）" if followup else ""
-    lines = [f"【Web 検索の結果{head}】検索語「{ctx.query}」 {ctx.when:%Y-%m-%d %H:%M} 時点"]
+    head = "（前回の結果。今の話題に関係があるときだけ使う）" if followup else ""
+    if ctx.query == "貼られたページ":
+        lines = [f"【相手が貼ったページの内容{head}】{ctx.when:%Y-%m-%d %H:%M} に読んだもの"]
+    else:
+        lines = [f"【Web 検索の結果{head}】検索語「{ctx.query}」 {ctx.when:%Y-%m-%d %H:%M} 時点"]
     if not ctx.results:
         lines.append("（結果が見つからなかった）")
     for i, r in enumerate(ctx.results, 1):
-        body = r.text or r.snippet
+        body = r.text or r.snippet or "（本文を読み取れなかった。画像だけのページや、開くのにログインが要るページかもしれない）"
         lines.append(f"[{i}] {r.title}（{r.site}）\n{body}")
     lines.append(
         "この結果だけを根拠に、キャラクターの口調で短く答える。結果に書いていないことは推測せず「わからなかった」と言う。"
@@ -168,4 +187,5 @@ def sources_line(ctx: SearchContext) -> str:
     Open-LLM-VTuber は <think> の中を画面に「( … )」と出すだけで読み上げない。
     [ ] で囲むやり方だと、URL の「.」で文が切られて括弧が分かれ、読み上げられてしまう。"""
     urls = [r.url for r in ctx.results if r.url]
-    return f"<think>出典: {' / '.join(urls)}</think>" if urls else ""
+    # 最後を「。」で終えないと、画面に出す最後の切れ端（URL の最後の「.」より後ろ）が落ちる
+    return f"<think>出典: {' / '.join(urls)}。</think>" if urls else ""

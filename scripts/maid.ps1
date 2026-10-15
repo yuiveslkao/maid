@@ -53,6 +53,8 @@ $OlvTag = "v1.2.1"
 $OlvFrontendCommit = "06a659b114fff788cf0daaa86e484576db4975bf"   # v1.2.1 が参照しているビルド済み画面
 $PyVer = "3.10"   # maid の部品も Open-LLM-VTuber と同じ Python を使う（Python を 2 つ入れないため）
 $ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"   # 音声認識のモデル（日本語専用）
+# 3D 表示に使うライブラリ（npm の配布物から必要なファイルだけ取り出す）
+$VrmLibs = @{ "three" = "https://registry.npmjs.org/three/-/three-0.185.1.tgz"; "three-vrm" = "https://registry.npmjs.org/@pixiv/three-vrm/-/three-vrm-3.5.5.tgz" }
 # maid の部品が使うライブラリ（検索・本文の抜き出し・PDF・Discord ゲート）
 $MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13")
 
@@ -75,6 +77,8 @@ $SilenceMs = [int](Get-Setting "silence_ms")           # 無音がこの長さ�
 $Search = [string](Get-Setting "search")               # auto / explicit / off
 $SearchFiller = [string]$UserSettings.search_filler    # 調べる前にすぐ言う一言（空なら言わない）
 if ($null -eq $UserSettings.search_filler) { $SearchFiller = [string]$Defaults.search_filler }
+$Vrm = [string](Get-Setting "vrm")                     # 3D モデル (.vrm) のパス。空なら Live2D
+$VrmView = [string](Get-Setting "vrm_view")            # bust（胸から上）/ full（全身）
 
 # ------------------------------------------------------------------ このプロセスの中だけの環境変数（Windows の設定は変えない）
 $env:UV_CACHE_DIR = "$Rt\cache\uv"
@@ -222,6 +226,19 @@ function Wait-Parts {
 }
 
 # 日本語の音声認識モデル (ReazonSpeech, sherpa-onnx 版) を取ってくる（初回だけ）
+# 3D 表示用のライブラリ（初回だけ。数 MB）
+function Install-VrmLibs {
+    if (-not $Vrm -or (Test-Path "$($P.Olv)\frontend\maid-vrm\lib\three-vrm.module.min.js")) { return }
+    Say "  3D 表示用のライブラリをダウンロードします（初回だけ）" Cyan
+    $files = @()
+    foreach ($name in @("three", "three-vrm")) {
+        $out = "$($P.Downloads)\$(Split-Path $VrmLibs[$name] -Leaf)"
+        Get-File $VrmLibs[$name] $out
+        $files += $out
+    }
+    if (-not (Invoke-OlvPatch (@("extract-vrm-libs") + $files))) { Say "  3D 表示用のライブラリを展開できませんでした（Live2D のまま起動します）" Yellow }
+}
+
 function Install-ReazonSpeech {
     if (Test-Path "$($P.Olv)\models\$ReazonName\encoder-epoch-99-avg-1.int8.onnx") { return }
     Say "  日本語の音声認識モデル (ReazonSpeech) をダウンロードします（約 700MB、初回だけ）" Cyan
@@ -317,6 +334,7 @@ function Invoke-Start {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Install-MaidVenv
     Install-ReazonSpeech
+    Install-VrmLibs
     Say "部品を起動しています（頭脳・声・Discord ゲート）" Cyan
     Start-Parts
 
@@ -327,7 +345,7 @@ function Invoke-Start {
     } else {
         Say "  Discord ゲートが起動しないので、使わずに直結します（.\maid.bat logs discord-gate）" Yellow
     }
-    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs"))) {
+    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs", "--vrm=$Vrm", "--vrm-view=$VrmView"))) {
         Say "  画面と conf.yaml の準備に失敗しました（今の設定のまま起動します）" Yellow
     }
     if (-not (Test-Port $Ports.Olv)) { Start-Part "open-llm-vtuber" $P.OlvPy @("run_server.py") $P.Olv }

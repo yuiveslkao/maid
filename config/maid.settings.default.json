@@ -4,5 +4,7 @@
   "speed": 1.0,
   "silence_ms": 900,
   "search": "auto",
-  "search_filler": "ちょっと調べるね。"
+  "search_filler": "ちょっと調べるね。",
+  "vrm": "",
+  "vrm_view": "bust"
 }

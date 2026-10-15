@@ -4,6 +4,7 @@
 - 使うモデルを maid.settings.json の model にすり替える（conf.yaml のモデル名は使わない）。
 - 返事の長さに上限を付け、同じ言葉の繰り返し（無限ループ）を見つけたら打ち切る。
 - 今の日時を伝える。必要なときは Web 検索して結果を渡し、返事の最後に出典を付ける（services/web_search.py）。
+  チャットに URL が貼られたら、検索せずにそのページを直接読む。
 
 それ以外のリクエスト（/api/... など）はそのまま Ollama に渡す。
 
@@ -186,9 +187,10 @@ def preload(upstream: str, model: str) -> None:
 
 
 def make_handler(upstream: str, model: str | None = None, search_mode: str = "off", search_filler: str = "",
-                 search_fn=None):
+                 search_fn=None, read_fn=None):
     up = urllib.parse.urlparse(upstream)
     search_fn = search_fn or web_search.search
+    read_pages = read_fn or web_search.read_pages
     # 直前の検索結果（「それっていつ？」のような続きの質問に使う）
     last_search: dict = {"ctx": None, "turns": 0}
 
@@ -271,6 +273,14 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             msgs = insert_before_last_user(msgs, CLOCK_NOTE.format(
                 now=f"{now:%Y年%m月%d日}（{WEEKDAYS[now.weekday()]}曜日）{now.hour}時{now.minute}分"))
             text = last_user_text(msgs)
+            urls = web_search.find_urls(text) if search_mode != "off" and req.get("stream") else []
+            if urls:  # 貼られたページは検索せずに直接読む
+                if search_filler:
+                    self._start()
+                    self._chunk(sse_text(search_filler))
+                ctx = read_pages(urls)
+                log.info("ページを読みました: %s", ", ".join(f"{r.url} ({len(r.text)} 文字)" for r in ctx.results))
+                return self._use_results(req, msgs, ctx)
             if req.get("stream") and web_search.needs_search(text, search_mode):
                 if search_filler:
                     self._start()
@@ -281,15 +291,18 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                 if query:
                     ctx = search_fn(query, SEARCH_PAGES)
                     log.info("検索「%s」→ %s", query, ", ".join(r.site for r in ctx.results) or "見つからず")
-                    last_search.update(ctx=ctx, turns=0)
-                    msgs = insert_before_last_user(msgs, web_search.build_context(ctx))
-                    line = web_search.sources_line(ctx)
-                    return {**req, "messages": msgs}, (sse_text(line) if line else b"")
+                    return self._use_results(req, msgs, ctx)
             ctx = last_search["ctx"]
             if ctx is not None and last_search["turns"] < FOLLOWUP_TURNS and (now - ctx.when).total_seconds() < FOLLOWUP_SECONDS:
                 last_search["turns"] += 1
                 msgs = insert_before_last_user(msgs, web_search.build_context(ctx, followup=True))
             return {**req, "messages": msgs}, b""
+
+        def _use_results(self, req: dict, msgs: list, ctx) -> tuple[dict, bytes]:
+            last_search.update(ctx=ctx, turns=0)
+            msgs = insert_before_last_user(msgs, web_search.build_context(ctx))
+            line = web_search.sources_line(ctx)
+            return {**req, "messages": msgs}, (sse_text(line) if line else b"")
 
         # ---------------- チャット
         def _chat(self, req: dict):

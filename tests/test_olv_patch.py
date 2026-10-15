@@ -60,7 +60,48 @@ class FrontendTest(unittest.TestCase):
 
     def test_ws_url_change_only_rewrites_defaults(self):
         olv_patch.patch_frontend(self.front, "ws://a/client-ws", "http://b", 900)
-        self.assertEqual(olv_patch.patch_frontend(self.front, "ws://c/client-ws", "http://b", 900), ["maid-defaults.js"])
+        # 設定が変わると、Edge に古い設定を使わせないよう index.html の ?v= も変わる
+        self.assertEqual(olv_patch.patch_frontend(self.front, "ws://c/client-ws", "http://b", 900), ["maid-defaults.js", "index.html"])
+
+    def make_vrm_libs(self):
+        archives = {}
+        for name, files in olv_patch.VRM_LIBS.items():
+            path = self.front / f"{name}.tgz"
+            with tarfile.open(path, "w:gz") as t:
+                for src in files:
+                    data = src.encode()
+                    info = tarfile.TarInfo(src)
+                    info.size = len(data)
+                    t.addfile(info, io.BytesIO(data))
+            archives[name] = path
+        olv_patch.extract_vrm_libs(archives, self.front)
+
+    def test_vrm(self):
+        vrm = self.front / "my.vrm"
+        vrm.write_bytes(b"glTF" + b"0" * 100)
+        # ライブラリが無ければ 3D は諦めて、ほかの準備はする
+        self.assertIn("maid-defaults.js", olv_patch.patch_frontend(self.front, "ws://a", "http://b", 900, vrm))
+        self.assertNotIn("maid-vrm", (self.front / "index.html").read_text(encoding="utf-8"))
+
+        self.make_vrm_libs()
+        self.assertTrue(olv_patch.vrm_libs_ready(self.front))
+        changed = olv_patch.patch_frontend(self.front, "ws://a", "http://b", 900, vrm, "full")
+        self.assertEqual(sorted(changed), sorted(["model.vrm", "maid-vrm.js", "maid-defaults.js", "index.html"]))
+        self.assertEqual(olv_patch.patch_frontend(self.front, "ws://a", "http://b", 900, vrm, "full"), [])
+        html = (self.front / "index.html").read_text(encoding="utf-8")
+        # import map は画面の本体（module）より前
+        self.assertLess(html.index('type="importmap"'), html.index("assets/main-nu7uwxNJ.js"))
+        self.assertEqual(html.count("<!-- maid-vrm -->"), 1)
+        js = (self.front / "maid-defaults.js").read_text(encoding="utf-8")
+        self.assertIn('"view": "full"', js)
+        self.assertIn("./maid-vrm/model.vrm?v=", js)
+        self.assertEqual((self.front / "maid-vrm" / "model.vrm").read_bytes(), vrm.read_bytes())
+
+        # 使わなくしたら片付ける
+        olv_patch.patch_frontend(self.front, "ws://a", "http://b", 900, None)
+        self.assertNotIn("maid-vrm", (self.front / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("window.MAID_VRM = null;", (self.front / "maid-defaults.js").read_text(encoding="utf-8"))
+        self.assertFalse((self.front / "maid-vrm" / "model.vrm").exists())
 
 
 TEMPLATE = ROOT / "config" / "open-llm-vtuber" / "conf.yaml"
