@@ -76,7 +76,9 @@ async function run(canvas, status, cfg, fps) {
   const bone = (name) => vrm.humanoid.getNormalizedBoneNode(name);
   // T ポーズのままにしない（腕を下ろす）
   const pose = { leftUpperArm: [0, 0, -1.25], rightUpperArm: [0, 0, 1.25], leftLowerArm: [0, 0, -0.15], rightLowerArm: [0, 0, 0.15] };
-  for (const [name, r] of Object.entries(pose)) bone(name)?.rotation.set(...r);
+  // VRM 0.x は回す向き（x と z）が VRM 1.0 と逆
+  const flip = vrm.meta?.metaVersion === "0" ? -1 : 1;
+  for (const [name, [x, y, z]] of Object.entries(pose)) bone(name)?.rotation.set(x * flip, y, z * flip);
 
   // カメラ: 頭の高さに合わせる（bust = 胸から上 / full = 全身）
   vrm.scene.updateMatrixWorld(true);
