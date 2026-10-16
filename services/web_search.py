@@ -13,6 +13,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -83,7 +84,7 @@ def ddg_search(query: str, max_results: int = 5) -> list[Result]:
     hits = []
     for backend in ("duckduckgo", "auto"):  # まず DuckDuckGo、だめなら ddgs に任せる（Bing など）
         try:
-            hits = DDGS().text(query, region="jp-jp", max_results=max_results, backend=backend) or []
+            hits = DDGS(timeout=5).text(query, region="jp-jp", max_results=max_results, backend=backend) or []
         except Exception as e:
             if backend == "auto":
                 raise
@@ -146,19 +147,31 @@ def read_pages(urls: list[str], fetch_fn: Callable[[str], str] | None = None, li
     return SearchContext(query="貼られたページ", results=[Result(u, u, "", t) for u, t in zip(urls, texts)])
 
 
+SEARCH_TIMEOUT = 15.0  # 検索がこれより長くかかったらあきらめる（そのあとページを読むのに最大 5 秒）
+_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+
 def search(query: str, pages: int = 3, search_fn: Callable[[str, int], list[Result]] = ddg_search,
-           fetch_fn: Callable[[str], str] = fetch_text) -> SearchContext:
+           fetch_fn: Callable[[str], str] = fetch_text, timeout: float = SEARCH_TIMEOUT) -> SearchContext:
     ctx = SearchContext(query=query)
+    started = time.perf_counter()
     try:
-        ctx.results = search_fn(query, max(pages + 2, 5))
+        ctx.results = _pool.submit(search_fn, query, max(pages + 2, 5)).result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        log.warning("検索が %.0f 秒で終わらなかったのであきらめました (%s)", timeout, query)
+        return ctx
     except Exception as e:
         log.warning("検索に失敗しました (%s): %s", query, e)
         return ctx
+    log.info("  検索 %.1f 秒（%d 件）", time.perf_counter() - started, len(ctx.results))
+    started = time.perf_counter()
     top = ctx.results[:pages]
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(top))) as pool:
         for r, text in zip(top, pool.map(lambda r: fetch_fn(r.url), top)):
             r.text = text
     ctx.results = top
+    log.info("  ページを読む %.1f 秒（%s）", time.perf_counter() - started,
+             ", ".join(f"{r.site} {len(r.text)} 文字" for r in top))
     return ctx
 
 

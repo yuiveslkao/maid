@@ -96,6 +96,28 @@ class MemoryTest(unittest.TestCase):
         self.assertIn("10/15: 相手は熱があると言っていた。", ctx)
         self.assertEqual(mem.Memory(Path(self.tmp.name) / "empty", self.brain).context("やあ"), "")
 
+    def test_chat_does_not_wait_for_consolidation(self):
+        gate = threading.Event()
+
+        def slow(messages, n):
+            gate.wait(5)  # 頭脳がまとめに時間をかけている
+            return ""
+
+        self.m.llm = slow
+        self.m.add_episode(self.t0, self.t0, "相手は熱があると言っていた。")
+        self.m.record("やあ", "うん", when=self.t0)
+        worker = threading.Thread(target=self.m.consolidate)
+        worker.start()
+        time.sleep(0.1)
+        self.assertTrue(self.m.busy())
+        started = time.perf_counter()
+        self.m.context("熱は？")
+        self.m.record("ねえ", "なあに")
+        self.assertLess(time.perf_counter() - started, 1.0)  # 会話の側は待たされない
+        gate.set()
+        worker.join()
+        self.assertFalse(self.m.busy())
+
     def test_topic(self):
         self.assertTrue(self.m.topic(random.Random(0)))  # 何も覚えていなくても話題は出る
         self.m.add_episode(self.t0, self.t0, "相手はテスト勉強をしていた。")

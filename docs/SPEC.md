@@ -128,6 +128,17 @@ JavaScript が必要で本文が取れないページをヘッドレスブラウ
 
 予定管理（リマインド）は作らないことにしました。
 
+### 将来: Windows ネイティブアプリ
+
+いずれ Open-LLM-VTuber への依存をなくし、自作の Windows アプリにしたい（コードの流用は可）。今のうちから、maid 側の部品は
+Open-LLM-VTuber に依存しない形にしておく:
+
+- そのまま使える: 頭脳の中継（`llm_proxy.py`・`web_search.py`・`memory.py`。OpenAI 互換の API なら何でも相手にできる）、
+  声の中継（`tts_bridge.py`）、3D 表示（`frontend/maid-vrm.js`。three-vrm なのでアプリの中の WebView でも動く）
+- 作り直しが要る: マイクと話し終わりの判定（今は画面の VAD）、音声認識の呼び出し、文ごとに区切って読み上げる流れ、割り込み、
+  会話の履歴、Discord ゲート（アプリの中に入れれば中継は不要）
+- 画面は WebView2（Windows に標準で入っている）に three-vrm を載せるのがいちばん近道
+
 ### 声（Phase 4）
 
 - 好みの声の音声を集めて学習する（AivisSpeech 用モデル（Style-Bert-VITS2 系）か GPT-SoVITS）。AivisSpeech 用なら `maid.settings.json` の voice を変えるだけで差し替えられます。

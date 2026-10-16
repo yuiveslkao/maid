@@ -20,6 +20,7 @@ import random
 import re
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -78,7 +79,8 @@ class Memory:
         self.llm = llm
         self.embed = embed or (lambda texts: None)
         self.idle = timedelta(minutes=idle_minutes)
-        self.lock = threading.RLock()
+        self.lock = threading.RLock()       # ファイルや DB を読み書きする短い間だけ
+        self.work_lock = threading.RLock()  # 記憶のまとめ（頭脳を使うので長い）。会話はこれを待たない
         (self.dir / "log").mkdir(parents=True, exist_ok=True)
         (self.dir / "history").mkdir(exist_ok=True)
         self.user_md = self.dir / "USER.md"
@@ -88,6 +90,7 @@ class Memory:
         self.db.execute("CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY, started TEXT, ended TEXT, summary TEXT, embedding TEXT)")
         self.db.commit()
         self._vectors: list[tuple[int, str, str, list[float] | None]] | None = None
+        self._busy_since = 0.0
 
     # ---------------------------------------------------------------- 記録
     def record(self, user: str, assistant: str, proactive: bool = False, when: datetime | None = None) -> None:
@@ -135,23 +138,39 @@ class Memory:
 
     def consolidate(self, turns: list[Turn] | None = None, tidy: bool = False) -> bool:
         """まだまとめていない会話を要約し、メモを書き直す。tidy なら最後にメモを整理する（maid を止めるとき）。"""
-        with self.lock:
+        with self.work_lock:
             turns = self.pending() if turns is None else turns
-            if turns and any(t.user for t in turns):
-                text = "\n".join(line for t in turns for line in t.lines())
-                summary = self._ask([{"role": "system", "content": EPISODE_PROMPT}, {"role": "user", "content": text}], 400)
-                if summary:
-                    self.add_episode(turns[0].when, turns[-1].when, summary)
-                self.update_notes(turns)
-            if turns:
+            if not turns and not tidy:
+                return False
+            self._busy_since = time.perf_counter()
+            log.info("記憶をまとめています（%d 往復）...", len(turns))
+            try:
+                return self._consolidate(turns, tidy)
+            finally:
+                log.info("記憶をまとめました（%.0f 秒）", time.perf_counter() - self._busy_since)
+                self._busy_since = 0.0
+
+    def busy(self) -> bool:
+        """記憶のまとめ中か（その間は頭脳がそちらに使われるので、返事が遅くなる）。"""
+        return bool(self._busy_since)
+
+    def _consolidate(self, turns: list[Turn], tidy: bool) -> bool:
+        if turns and any(t.user for t in turns):
+            text = "\n".join(line for t in turns for line in t.lines())
+            summary = self._ask([{"role": "system", "content": EPISODE_PROMPT}, {"role": "user", "content": text}], 400)
+            if summary:
+                self.add_episode(turns[0].when, turns[-1].when, summary)
+            self.update_notes(turns)
+        if turns:
+            with self.lock:
                 self._save_state(summarized_until=turns[-1].when.isoformat(timespec="seconds"))
-            if tidy:
-                for path in (self.user_md, self.char_md):
-                    self._rewrite(path, TIDY_PROMPT.format(max_lines=MAX_NOTE_LINES), "")
-            return bool(turns)
+        if tidy:
+            for path in (self.user_md, self.char_md):
+                self._rewrite(path, TIDY_PROMPT.format(max_lines=MAX_NOTE_LINES), "")
+        return bool(turns)
 
     def update_notes(self, turns: list[Turn]) -> None:
-        with self.lock:
+        with self.work_lock:
             talk = "\n".join(line for t in turns for line in t.lines())
             today = f"{turns[-1].when:%m/%d}" if turns else f"{datetime.now():%m/%d}"
             for path, prompt in ((self.user_md, USER_NOTES_PROMPT), (self.char_md, CHAR_NOTES_PROMPT)):
@@ -172,8 +191,9 @@ class Memory:
                 log.warning("%s の書き直しを見送りました（結果が短すぎる）", path.name)
             return
         if new != old:
-            self._backup(path)
-            path.write_text(new + "\n", encoding="utf-8")
+            with self.lock:
+                self._backup(path)
+                path.write_text(new + "\n", encoding="utf-8")
             log.info("%s を更新しました（%d 行）", path.name, len(lines))
 
     def _backup(self, path: Path) -> None:

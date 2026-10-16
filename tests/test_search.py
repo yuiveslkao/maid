@@ -36,6 +36,12 @@ class WebSearchTest(unittest.TestCase):
                 {"role": "user", "content": [{"type": "text", "text": "調べて"}]}]
         self.assertEqual(llm_proxy.fallback_query(msgs), "ノーベル文学賞は誰")
 
+    def test_search_gives_up_when_too_slow(self):
+        import time
+
+        ctx = web_search.search("q", search_fn=lambda q, n: time.sleep(2) or [], timeout=0.2)
+        self.assertEqual(ctx.results, [])
+
     def test_sources_are_not_read_aloud(self):
         ctx = SearchContext("q", [Result("a", "https://time.is/ja/Japan", ""), Result("b", "https://ja.example.com/x", "")])
         # Open-LLM-VTuber は <think> の中を読み上げない（[ ] だと URL の「.」で文が切られて読み上げられた）

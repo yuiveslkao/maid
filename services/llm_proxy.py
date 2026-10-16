@@ -284,11 +284,11 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             log.debug("%s - %s", self.address_string(), fmt % args)
 
         # ---------------- 送受信
-        def _open(self, body: bytes, path: str | None = None, method: str | None = None):
+        def _open(self, body: bytes, path: str | None = None, method: str | None = None, timeout: float = 600):
             headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
             if body or (method or self.command) in ("POST", "PUT", "PATCH"):
                 headers["Content-Length"] = str(len(body))
-            conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=600)
+            conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=timeout)
             conn.request(method or self.command, path or self.path, body=body or None, headers=headers)
             return conn, conn.getresponse()
 
@@ -333,7 +333,8 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                                "messages": query_request(msgs)}, model)
             line = ""
             try:
-                conn, res = self._open(json.dumps(q, ensure_ascii=False).encode("utf-8"), "/v1/chat/completions", "POST")
+                conn, res = self._open(json.dumps(q, ensure_ascii=False).encode("utf-8"), "/v1/chat/completions", "POST",
+                                       timeout=60)
                 try:
                     answer = content_of(json.loads(res.read())) if res.status == 200 else ""
                 finally:
@@ -382,7 +383,9 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                 if search_filler:
                     self._start()
                     self._chunk(sse_text(search_filler))  # 調べている間に読み上げが始まる
+                started = time.perf_counter()
                 query = self._make_query(req, history)
+                log.info("  検索語づくり %.1f 秒 →「%s」", time.perf_counter() - started, query or "なし")
                 if query is None and web_search.needs_search(text, "explicit"):  # はっきり頼まれたら必ず調べる
                     query = fallback_query(history)
                 if query:
@@ -406,10 +409,13 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             suffix = b""
             self._proactive = False
             user_text = ""
+            started = time.perf_counter()
             if isinstance(req.get("messages"), list):
                 user_text = last_user_text(req["messages"])
                 req, suffix = self._augment(req)
+            prepared = time.perf_counter() - started
             conn, res = self._open(json.dumps(with_defaults(req, model), ensure_ascii=False).encode("utf-8"))
+            self._timing = (started, prepared)
             try:
                 if res.status == 200 and req.get("stream"):
                     reply = self._stream(res, suffix)
@@ -431,6 +437,7 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             繰り返し（無限ループ）を見つけたら、そこで返事を終わらせる（接続を切って Ollama 側の生成も止める）。"""
             self._start(res)
             text = ""
+            first = None
             while True:
                 line = res.readline()
                 if not line:
@@ -445,6 +452,8 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                         text += content_of(json.loads(s[5:]))
                     except ValueError:
                         pass
+                    if first is None and text:
+                        first = time.perf_counter()
                     if is_looping(text):
                         log.warning("同じ言葉の繰り返しを見つけたので返事を打ち切りました: …%s", text[-40:])
                         self._chunk(line + b"\n" + suffix + STOP_EVENT)
@@ -453,6 +462,10 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                 self._chunk(line)
             self._chunk(suffix)
             self._end()
+            started, prepared = getattr(self, "_timing", (time.perf_counter(), 0.0))
+            log.info("返事: 準備 %.1f 秒 / 最初の言葉まで %.1f 秒 / 全部で %.1f 秒（%d 文字）%s", prepared,
+                     (first or time.perf_counter()) - started, time.perf_counter() - started, len(text),
+                     "（記憶のまとめ中のため遅いかも）" if memory and memory.busy() else "")
             return text
 
         def _forward(self):
