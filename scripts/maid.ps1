@@ -9,11 +9,13 @@
 #   maid.bat doctor           起動中に、返事が来ない・声が出ないなどの原因を調べる
 #   maid.bat logs <名前>      裏の部品のログを別ウィンドウで見る（ollama / brain-proxy / tts-bridge など）
 #   maid.bat clean            ログ・一時ファイル・使っていないモデルを消す（-History で会話の履歴も）
+#   maid.bat clean -Memory    覚えたこと（メモ・前の会話の要約）だけを消し、会話の記録から覚え直させる
 
 param(
     [Parameter(Position = 0)][string]$Command = "help",
     [Parameter(Position = 1)][string]$Arg = "",
-    [switch]$History                 # clean で会話の履歴も消す
+    [switch]$History,                # clean で会話の履歴も消す
+    [switch]$Memory                  # clean で覚えたことを消して、会話の記録から覚え直させる
 )
 
 $ErrorActionPreference = "Stop"
@@ -459,6 +461,14 @@ function Invoke-Doctor {
 
 # ------------------------------------------------------------------ clean / logs
 function Invoke-Clean {
+    if ($Memory) {
+        if (Test-Port $Ports.BrainProxy) { throw "先に .\maid.bat stop を実行してください。" }
+        Say "覚えたこと（data\USER.md / MEMORY.md / 前の会話の要約）を消して、次に起動したときに会話の記録（data\log）から覚え直させます。" Yellow
+        if ((Read-Host "よければ yes と入力") -ne "yes") { Say "やめました" Gray; return }
+        foreach ($f in @("USER.md", "MEMORY.md", "memory.db", "state.json")) { Remove-Item -Force "$DataDir\$f" -ErrorAction SilentlyContinue }
+        Say "消しました。起動して 1 分ほどすると、裏で覚え直しが始まります（.\maid.bat logs brain-proxy で様子が見られます）。" Green
+        return
+    }
     if (Test-Port $Ports.Olv) { throw "動いている間は消せないファイルがあります。先に .\maid.bat stop を実行してください。" }
     # ログ・一時ファイル・ダウンロード済みのファイル・前に使っていた音声認識モデル (SenseVoice)
     $oldAsr = @(Get-ChildItem "$($P.Olv)\models\sherpa-onnx-sense-voice-*" -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
@@ -521,6 +531,6 @@ switch ($Command) {
     "logs" { Invoke-Logs }
     "clean" { Invoke-Clean }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 5 -First 6 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 5 -First 7 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }

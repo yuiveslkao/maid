@@ -27,13 +27,25 @@ class FakeBrain:
         self.calls.append((system, user))
         if system == mem.EPISODE_PROMPT:
             return "相手は熱があると言っていた。キャラは心配した。"
-        if "【会話】" not in user:  # 整理
-            return user.split("\n", 1)[1]
-        if "相手（ユーザー）について" in system:
+        if system == mem.FACTS_PROMPT:
+            facts = []
+            if "熱があるんだ" in user:
+                facts.append("相手: 熱がある")
             if "治った" in user:
-                return "- ゲームが好き\n- 熱は治った（10/16）"
-            return "- ゲームが好き\n- 熱がある（10/15）"
-        return "- 相手の体調を気にしている"
+                facts.append("相手: 熱は治った")
+            if "ゲームが好き" in user:
+                facts.append("相手: ゲームが好き")
+            if "オムライスがすき" in user:
+                facts.append("キャラ: オムライスが好き")
+            return "\n".join(facts) or "なし"
+        old, _, new = user.partition("【新しくわかったこと】")
+        lines = [ln for ln in old.splitlines() if ln.startswith("- ")]
+        for fact in new.splitlines():
+            if "治った" in fact:
+                lines = [ln for ln in lines if "熱がある" not in ln]
+            if fact.startswith("- "):
+                lines.append(fact)
+        return "\n".join(lines)
 
 
 def fake_embed(texts):
@@ -58,7 +70,7 @@ class MemoryTest(unittest.TestCase):
         self.assertFalse(self.m.maybe_consolidate(self.t0 + timedelta(minutes=20)))  # まだ 30 分たっていない
         self.assertTrue(self.m.maybe_consolidate(self.t0 + timedelta(minutes=40)))
         self.assertEqual(self.m.pending(), [])
-        self.assertIn("熱がある（10/15）", self.m.read_note(self.m.user_md))
+        self.assertIn("熱がある", self.m.read_note(self.m.user_md))
         self.assertEqual(len(self.m.episodes()), 1)
         # 会話の記録には、キャラから話しかけた分も「キャラ:」として入る
         talk = [u for s, u in self.brain.calls if s == mem.EPISODE_PROMPT][0]
@@ -68,9 +80,22 @@ class MemoryTest(unittest.TestCase):
         later = self.t0 + timedelta(days=1)
         self.m.record("熱は治ったよ", "よかった！", when=later)
         self.m.consolidate()
-        self.assertIn("熱は治った（10/16）", self.m.read_note(self.m.user_md))
+        self.assertIn("熱は治った", self.m.read_note(self.m.user_md))
         self.assertNotIn("熱がある", self.m.read_note(self.m.user_md))
         self.assertEqual(len(list((Path(self.tmp.name) / "history").glob("USER-*.md"))), 1)
+
+    def test_character_likes_go_to_character_notes(self):
+        self.m.record("お昼何食べたい？", "オムライスがすき！", when=self.t0)
+        self.m.consolidate()
+        self.assertEqual(self.m.read_note(self.m.user_md), "")
+        self.assertEqual(self.m.read_note(self.m.char_md), "- オムライスが好き")
+
+    def test_sessions_are_summarized_separately(self):
+        self.m.record("熱があるんだ", "だいじょうぶ？", when=self.t0)
+        self.m.record("熱は治ったよ", "よかった！", when=self.t0 + timedelta(hours=3))
+        self.m.consolidate()
+        self.assertEqual(len(self.m.episodes()), 2)
+        self.assertEqual(self.m.read_note(self.m.user_md), "- 熱は治った")
 
     def test_bad_rewrite_is_ignored(self):
         self.m.user_md.write_text("- a\n- b\n- c\n- d\n", encoding="utf-8")

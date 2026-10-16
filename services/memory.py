@@ -41,18 +41,30 @@ EPISODE_PROMPT = (
     "何を話したか・相手の様子や出来事・約束したことを、3〜5 文の日本語で要約してください。"
     "相手は「相手」、キャラは「キャラ」と書く。要約だけを出力する。"
 )
-NOTES_RULES = (
-    "ルール:\n"
-    "- 【会話】から新しくわかったことを足す。\n"
-    "- 状態が変わったら書き換える（例:「熱がある」のあとに治ったと言っていたら「熱は治った（{today}）」にする）。\n"
-    "- 古くなって意味がなくなったものは消す。「忘れて」と言われたことは消す。\n"
-    "- 1 行に 1 つ、「- 」で始める。体調や予定のように変わるものには（月/日）を付ける。{max_lines} 行まで。\n"
-    "- 会話に無いことや推測は書かない。\n"
-    "- 更新したメモの全文だけを出力する。変えるところが無ければ今のメモをそのまま出力する。"
+# 会話から「覚えておくこと」を、誰のことかを付けて書き出させる（小さいモデルは誰の発言かを取り違えやすいので、
+# 書き出しと、メモへの書き込みを分ける）
+FACTS_PROMPT = (
+    "あなたは記憶係です。次は「相手」（ユーザー。人間）と「キャラ」（AI のキャラクター）の会話です。"
+    "あとで覚えておくとよいことを 1 行ずつ書き出してください。各行は次のどちらかで始める:\n"
+    "相手: … 相手自身のこと（相手が自分について言ったこと・したこと・これからすること・体調・好み・生活）\n"
+    "キャラ: … キャラ自身のこと（キャラが言った自分の好き嫌いや気持ち・キャラが約束したこと・キャラが次に話したいこと）\n"
+    "注意:\n"
+    "- 好き嫌いや気持ちは、それを言った本人のこととして書く（キャラが「オムライスがすき」と言ったら「キャラ: オムライスが好き」）。\n"
+    "- 相手が質問しただけのことを、相手の好みにしない。\n"
+    "- 相手が「忘れて」と言ったら「相手: 〜は忘れてほしい」と書く。\n"
+    "- 覚えるほどでもない雑談は書かない。何も無ければ「なし」とだけ出力する。"
 )
-USER_NOTES_PROMPT = "あなたは記憶係です。【今のメモ】は、相手（ユーザー）について覚えていること（事実・好み・生活・体調・最近していること）です。\n" + NOTES_RULES
-CHAR_NOTES_PROMPT = ("あなたは記憶係です。【今のメモ】は、キャラ自身の覚え書き（相手との思い出・約束・キャラが最近気になっていること・"
-                     "次に話したいこと）です。キャラの性格や口調は書かない。\n" + NOTES_RULES)
+NOTES_RULES = (
+    "【新しくわかったこと】を【今のメモ】に反映した全文を出力してください。ルール:\n"
+    "- 新しいことは足す。同じことはまとめる。\n"
+    "- 状態が変わったら書き換える（例:「熱がある」のあとに治ったとわかったら「熱は治った（{today}）」にする）。\n"
+    "- 古くなって意味がなくなったものと、「忘れてほしい」と言われたものは消す。\n"
+    "- 1 行に 1 つ、「- 」で始める。体調や予定のように変わるものには（月/日）を付ける。{max_lines} 行まで。\n"
+    "- 書いてないことや推測は足さない。メモの全文だけを出力する。"
+)
+USER_NOTES_PROMPT = "あなたは記憶係です。【今のメモ】は、相手（ユーザー。人間）について覚えていること（事実・好み・生活・体調・最近していること）です。\n" + NOTES_RULES
+CHAR_NOTES_PROMPT = ("あなたは記憶係です。【今のメモ】は、キャラ自身の覚え書き（キャラの好き嫌い・相手との思い出・約束・"
+                     "キャラが最近気になっていること・次に話したいこと）です。キャラの性格や口調は書かない。\n" + NOTES_RULES)
 TIDY_PROMPT = ("あなたは記憶係です。【今のメモ】を整理してください。同じ内容はまとめ、矛盾するものは新しい方を残し、"
                "古くて意味がなくなったものは消す。1 行に 1 つ、「- 」で始める。{max_lines} 行まで。整理したメモの全文だけを出力する。")
 
@@ -155,36 +167,59 @@ class Memory:
         return bool(self._busy_since)
 
     def _consolidate(self, turns: list[Turn], tidy: bool) -> bool:
-        if turns and any(t.user for t in turns):
-            text = "\n".join(line for t in turns for line in t.lines())
-            summary = self._ask([{"role": "system", "content": EPISODE_PROMPT}, {"role": "user", "content": text}], 400)
-            if summary:
-                self.add_episode(turns[0].when, turns[-1].when, summary)
-            self.update_notes(turns)
-        if turns:
+        # 30 分以上あいたところで分けて、1 回の会話ずつまとめる（古い順。状態の変化を順に反映するため）
+        for session in self.sessions(turns):
+            if any(t.user for t in session):
+                text = "\n".join(line for t in session for line in t.lines())
+                summary = self._ask([{"role": "system", "content": EPISODE_PROMPT}, {"role": "user", "content": text}], 400)
+                if summary:
+                    self.add_episode(session[0].when, session[-1].when, summary)
+                self.update_notes(session)
             with self.lock:
-                self._save_state(summarized_until=turns[-1].when.isoformat(timespec="seconds"))
+                self._save_state(summarized_until=session[-1].when.isoformat(timespec="seconds"))
         if tidy:
             for path in (self.user_md, self.char_md):
                 self._rewrite(path, TIDY_PROMPT.format(max_lines=MAX_NOTE_LINES), "")
         return bool(turns)
 
+    def sessions(self, turns: list[Turn]) -> list[list[Turn]]:
+        out: list[list[Turn]] = []
+        for t in turns:
+            if out and t.when - out[-1][-1].when < self.idle:
+                out[-1].append(t)
+            else:
+                out.append([t])
+        return out
+
+    def facts(self, turns: list[Turn]) -> tuple[list[str], list[str]]:
+        """会話から覚えておくことを書き出し、（相手のこと, キャラのこと）に分ける。"""
+        talk = "\n".join(line for t in turns for line in t.lines())
+        answer = self._ask([{"role": "system", "content": FACTS_PROMPT}, {"role": "user", "content": talk}], 600)
+        user, char = [], []
+        for line in answer.splitlines():
+            line = line.strip().lstrip("-・* ").strip()
+            for prefix, bucket in (("相手:", user), ("相手：", user), ("キャラ:", char), ("キャラ：", char)):
+                if line.startswith(prefix) and line[len(prefix):].strip():
+                    bucket.append(line[len(prefix):].strip())
+        return user, char
+
     def update_notes(self, turns: list[Turn]) -> None:
         with self.work_lock:
-            talk = "\n".join(line for t in turns for line in t.lines())
             today = f"{turns[-1].when:%m/%d}" if turns else f"{datetime.now():%m/%d}"
-            for path, prompt in ((self.user_md, USER_NOTES_PROMPT), (self.char_md, CHAR_NOTES_PROMPT)):
-                self._rewrite(path, prompt.format(today=today, max_lines=MAX_NOTE_LINES), talk)
+            user, char = self.facts(turns)
+            for path, prompt, facts in ((self.user_md, USER_NOTES_PROMPT, user), (self.char_md, CHAR_NOTES_PROMPT, char)):
+                if facts:
+                    self._rewrite(path, prompt.format(today=today, max_lines=MAX_NOTE_LINES), "\n".join(f"- {f}" for f in facts))
 
     def _rewrite(self, path: Path, prompt: str, talk: str) -> None:
         old = self.read_note(path)
         if not old and not talk:
             return
-        content = f"【今のメモ】\n{old or '（まだ無い）'}" + (f"\n\n【会話】\n{talk}" if talk else "")
+        content = f"【今のメモ】\n{old or '（まだ無い）'}" + (f"\n\n【新しくわかったこと】\n{talk}" if talk else "")
         answer = self._ask([{"role": "system", "content": prompt}, {"role": "user", "content": content}], 1200)
         lines = [ln.strip() for ln in answer.splitlines() if ln.strip().startswith("- ")][:MAX_NOTE_LINES]
         new = "\n".join(lines)
-        forget = bool(re.search(r"忘れて|わすれて", talk))
+        forget = bool(re.search(r"忘れ|わすれ", talk))
         # 頭脳がうまく書けなかったとき（空・半分以下に減った）は、忘れてと言われていない限り書き換えない
         if not new or (old and not forget and len(lines) < len(old.splitlines()) / 2):
             if answer:
