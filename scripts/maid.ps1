@@ -98,6 +98,7 @@ $env:OLLAMA_MODELS = $P.OllamaModel
 $env:OLLAMA_HOST = "127.0.0.1:$($Ports.Ollama)"
 $env:OLLAMA_KEEP_ALIVE = "-1"   # モデルを GPU に載せっぱなしにする（外れると読み込み直しに 1 分以上かかる）
 $env:PYTHONUNBUFFERED = "1"
+$env:PYTHONIOENCODING = "utf-8"   # ログを UTF-8 で書かせる（Windows の Python は Shift-JIS で書くので logs で文字化けする）
 
 # ------------------------------------------------------------------ 共通
 function Say([string]$msg, [string]$color = "Gray") { Write-Host $msg -ForegroundColor $color }
@@ -371,13 +372,24 @@ function Invoke-Start {
     Start-Process "msedge.exe" "--app=$OlvUrl/?t=$([DateTimeOffset]::Now.ToUnixTimeSeconds())"
     Say "`n準備完了。画面を閉じても裏の部品は動き続けます。ログ: .\maid.bat logs <名前>" Green
     Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
+    # Ctrl+C はこのウィンドウの部品全部に届いてしまう（頭脳が先に止まって記憶をまとめられない）。
+    # なので待っている間は Ctrl+C をキー入力として受け取り、記憶をまとめてから自分で部品を止める
+    $ctrlC = $false
+    try { [Console]::TreatControlCAsInput = $true; $ctrlC = $true } catch {}
     try {
-        while (Test-Port $Ports.Olv) { Start-Sleep -Seconds 2 }
-        Say "Open-LLM-VTuber が終了しました。" Yellow
+        while (Test-Port $Ports.Olv) {
+            if ($ctrlC -and [Console]::KeyAvailable) {
+                $k = [Console]::ReadKey($true)
+                if ($k.Key -eq [ConsoleKey]::C -and ($k.Modifiers -band [ConsoleModifiers]::Control)) { break }
+            }
+            Start-Sleep -Milliseconds 300
+        }
+        if (-not (Test-Port $Ports.Olv)) { Say "Open-LLM-VTuber が終了しました。" Yellow }
     } finally {
+        if ($ctrlC) { try { [Console]::TreatControlCAsInput = $false } catch {} }   # まとめの途中でもう一度 Ctrl+C なら全部止まる
         Save-Memory
         $n = Stop-Maid
-        Say "残っていたプログラムを止めました ($n 個)" Gray
+        Say "止めました ($n 個)" Gray
     }
 }
 
@@ -488,6 +500,7 @@ function Invoke-Logs {
     $names = @(Get-ChildItem "$($P.Logs)\*.log" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike "*.err.log" } | ForEach-Object { $_.BaseName })
     if (-not $Arg) {
         Say "使い方: maid.bat logs <名前>   （名前: $($names -join ', ')）" Gray
+        Say "コピーしたいときはメモ帳で開く: notepad runtime\logs\<名前>.log" Gray
         Say "本体の詳しいログ: $($P.Olv)\logs\" Gray
         return
     }

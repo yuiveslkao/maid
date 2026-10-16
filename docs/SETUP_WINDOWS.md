@@ -199,6 +199,8 @@ start.bat で起動したまま、別の PowerShell で:
 | 「最初の言葉まで」が長いのに検索していない | 頭脳のモデルが GPU から外れて読み込み直しになっている可能性。`ollama.exe ps` で「100% GPU」になっているかを見る。`.\maid.bat logs ollama` に load の行が何度も出ていたら教えてください |
 | brain-proxy に何も出ない | 頭脳の中継まで届いていない。`.\maid.bat logs open-llm-vtuber` と `.\maid.bat doctor` を見る |
 
+ログをコピーして貼りたいときは、メモ帳で開きます: `notepad runtime\logs\brain-proxy.log`（ログの窓は流れ続けるのでコピーしにくい）。
+
 `ollama.exe ps` は、PowerShell で `$env:OLLAMA_HOST="127.0.0.1:11436"; .\runtime\ollama\ollama.exe ps` と打ちます（maid の Ollama は 11436 番で動いているため）。
 
 | 症状 | 確認すること |
