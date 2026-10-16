@@ -81,6 +81,10 @@ $Vrm = [string](Get-Setting "vrm")                     # 3D モデル (.vrm) の
 # 「models/xxx.vrm」のような書き方は maid フォルダからの場所とみなす
 if ($Vrm -and -not [IO.Path]::IsPathRooted($Vrm)) { $Vrm = Join-Path $Root $Vrm }
 $VrmView = [string](Get-Setting "vrm_view")            # bust（胸から上）/ full（全身）
+$ProactiveMinutes = [double](Get-Setting "proactive_minutes")  # 会話がこれだけ無かったらキャラから話しかける（0 で話しかけない）
+$EmbedModel = [string]$UserSettings.embed_model           # 記憶を探すモデル（空なら言葉の重なりだけで探す）
+if ($null -eq $UserSettings.embed_model) { $EmbedModel = [string]$Defaults.embed_model }
+$DataDir = Join-Path $Root "data"                      # 記憶（会話ログ・メモ・前の会話の要約）。git には入れない
 
 # ------------------------------------------------------------------ このプロセスの中だけの環境変数（Windows の設定は変えない）
 $env:UV_CACHE_DIR = "$Rt\cache\uv"
@@ -179,6 +183,14 @@ function Start-PyPart([string]$Name, [string]$Script, [string[]]$ScriptArgs) {
     Start-Part $Name $P.MaidPy (@("`"$Script`"") + $ScriptArgs)
 }
 
+# 止める前に、まだまとめていない会話を記憶にまとめる（頭脳の中継が動いているときだけ。数十秒〜数分）
+function Save-Memory {
+    if (-not (Test-Port $Ports.BrainProxy)) { return }
+    Say "今日の会話を記憶にまとめています（もう一度 Ctrl+C で中断できます）..." Gray
+    try { Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($Ports.BrainProxy)/maid/consolidate" -TimeoutSec 900 | Out-Null }
+    catch { Say "  まとめられませんでした（次に起動したときにまとめます）" Yellow }
+}
+
 function Stop-Maid {
     # runtime\ の中のプログラムだけを止める。
     # 数はプログラムの個数（uv とその中の python、Ollama とその中の llama-server など）なので毎回変わる
@@ -206,7 +218,7 @@ function Start-Parts {
     Start-OllamaServer
     # 頭脳の中継は起動するとすぐモデルを GPU に読み込ませる（Open-LLM-VTuber の起動と並行して進む）
     Start-PyPart "brain-proxy" "$Svc\llm_proxy.py" @("--port", "$($Ports.BrainProxy)", "--ollama", "http://127.0.0.1:$($Ports.Ollama)",
-        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"")
+        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"", "--data", "`"$DataDir`"", "--embed-model=$EmbedModel")
     if (-not (Test-Port $Ports.Aivis)) {
         $exe = Find-AivisExe
         if (-not $exe) { throw "AivisSpeech Engine がありません。先に setup.bat を実行してください。" }
@@ -214,7 +226,8 @@ function Start-Parts {
         Start-Part "aivisspeech" $exe @("--port", "$($Ports.Aivis)")
     }
     Start-PyPart "tts-bridge" "$Svc\tts_bridge.py" @("--port", "$($Ports.TtsBridge)", "--aivis-url", "http://127.0.0.1:$($Ports.Aivis)", "--voice", "`"$Voice`"", "--speed", "$Speed")
-    Start-PyPart "discord-gate" "$Svc\discord_gate.py" @("--port", "$($Ports.Gate)", "--backend", "ws://127.0.0.1:$($Ports.Olv)")
+    Start-PyPart "discord-gate" "$Svc\discord_gate.py" @("--port", "$($Ports.Gate)", "--backend", "ws://127.0.0.1:$($Ports.Olv)",
+        "--proactive-minutes", "$ProactiveMinutes")
 }
 
 # 起動を待つ。どれかが起動しなければ、見るべきログの名前を出して止める
@@ -362,6 +375,7 @@ function Invoke-Start {
         while (Test-Port $Ports.Olv) { Start-Sleep -Seconds 2 }
         Say "Open-LLM-VTuber が終了しました。" Yellow
     } finally {
+        Save-Memory
         $n = Stop-Maid
         Say "残っていたプログラムを止めました ($n 個)" Gray
     }
@@ -489,7 +503,7 @@ function Invoke-Logs {
 switch ($Command) {
     "setup" { Invoke-Setup }
     "start" { Invoke-Start }
-    "stop" { Say "止めました ($(Stop-Maid) 個)" Green }
+    "stop" { Save-Memory; Say "止めました ($(Stop-Maid) 個)" Green }
     "doctor" { Invoke-Doctor }
     "logs" { Invoke-Logs }
     "clean" { Invoke-Clean }

@@ -5,3 +5,4 @@ runtime/
 maid.settings.json
 models/*
 !models/README.md
+data/

@@ -5,6 +5,7 @@
 - 返事の長さに上限を付け、同じ言葉の繰り返し（無限ループ）を見つけたら打ち切る。
 - 今の日時を伝える。必要なときは Web 検索して結果を渡し、返事の最後に出典を付ける（services/web_search.py）。
   チャットに URL が貼られたら、検索せずにそのページを直接読む。
+- 記憶（services/memory.py）: 会話を記録し、覚えていることを渡す。キャラから話しかけるときは話題を選んで渡す。
 
 それ以外のリクエスト（/api/... など）はそのまま Ollama に渡す。
 
@@ -25,9 +26,12 @@ import time
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import web_search  # noqa: E402  （検索しないときは追加パッケージを読み込まない）
+from memory import Memory  # noqa: E402
 
 log = logging.getLogger("llm_proxy")
 
@@ -49,6 +53,11 @@ QUERY_PROMPT = ("あなたは検索語を作る係です。会話の流れを踏
                 "説明や記号は付けない。会話相手の名前や家族の情報など、個人的な情報は入れない。"
                 "検索の必要がなければ「なし」とだけ出力する。")
 QUERY_CONTEXT_MESSAGES = 6  # 検索語を作るときに見せる直前の発言の数
+# Open-LLM-VTuber がキャラから話しかけさせるときに送ってくる指示（prompts/utils/proactive_speak_prompt.txt）
+PROACTIVE_MARK = "Please say something"
+PROACTIVE_PROMPT = ("（あなたから話しかける番です。相手は今は何も言っていません）\n話題: {topic}\n"
+                    "キャラの口調で、1〜2 文で自然に話しかける。返事を急かさない。前置きや説明は言わない。")
+PROACTIVE_CONTEXT_SECONDS = 1800  # 話しかけた内容を、相手の返事のときに思い出させる期限
 STOP_EVENT = b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
 
 
@@ -186,13 +195,87 @@ def preload(upstream: str, model: str) -> None:
             time.sleep(1)  # Ollama の起動待ち
 
 
+def ollama_chat(upstream: str, model: str | None) -> Callable[[list, int], str]:
+    """記憶の整理などに使う、ふつうの（ストリーミングしない）呼び出し。"""
+    up = urllib.parse.urlparse(upstream)
+
+    def chat(messages: list, max_tokens: int) -> str:
+        body = with_defaults({"model": model or "", "stream": False, "temperature": 0.3, "max_tokens": max_tokens,
+                              "messages": messages}, model)
+        conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=600)
+        try:
+            conn.request("POST", "/v1/chat/completions", body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                         headers={"Content-Type": "application/json"})
+            res = conn.getresponse()
+            data = res.read()
+            if res.status != 200:
+                raise OSError(f"{res.status} {data[:200]!r}")
+            return content_of(json.loads(data))
+        finally:
+            conn.close()
+    return chat
+
+
+def ollama_embed(upstream: str, model: str) -> Callable[[list[str]], list | None]:
+    """意味のベクトルを作る。GPU は頭脳に空けておくため CPU で動かす（num_gpu: 0）。"""
+    up = urllib.parse.urlparse(upstream)
+
+    def embed(texts: list[str]) -> list | None:
+        body = {"model": model, "input": texts, "keep_alive": -1, "options": {"num_gpu": 0}}
+        conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=120)
+        try:
+            conn.request("POST", "/api/embed", body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                         headers={"Content-Type": "application/json"})
+            res = conn.getresponse()
+            data = res.read()
+            return json.loads(data).get("embeddings") if res.status == 200 else None
+        finally:
+            conn.close()
+    return embed
+
+
+def ensure_model(upstream: str, name: str) -> None:
+    """モデルが無ければ裏でダウンロードする（記憶を探すための小さいモデル。初回だけ）。"""
+    up = urllib.parse.urlparse(upstream)
+    for _ in range(120):
+        try:
+            conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=3600)
+            conn.request("POST", "/api/show", body=json.dumps({"model": name}).encode(), headers={"Content-Type": "application/json"})
+            res = conn.getresponse()
+            res.read()
+            if res.status == 200:
+                return
+            log.info("%s をダウンロードします（記憶を探すのに使う。初回だけ）", name)
+            conn.request("POST", "/api/pull", body=json.dumps({"model": name, "stream": False}).encode(),
+                         headers={"Content-Type": "application/json"})
+            res = conn.getresponse()
+            res.read()
+            log.info("%s のダウンロード: %s", name, "完了" if res.status == 200 else f"失敗 ({res.status})")
+            return
+        except OSError:
+            time.sleep(1)  # Ollama の起動待ち
+        finally:
+            conn.close()
+
+
+def memory_worker(memory: Memory, stop: threading.Event, every: float = 60) -> None:
+    """しばらく話していなかったら、それまでの会話を黙ってまとめる。"""
+    while not stop.wait(every):
+        try:
+            memory.maybe_consolidate()
+        except Exception:
+            log.exception("記憶の整理でエラー")
+
+
 def make_handler(upstream: str, model: str | None = None, search_mode: str = "off", search_filler: str = "",
-                 search_fn=None, read_fn=None):
+                 search_fn=None, read_fn=None, memory: Memory | None = None):
     up = urllib.parse.urlparse(upstream)
     search_fn = search_fn or web_search.search
     read_pages = read_fn or web_search.read_pages
     # 直前の検索結果（「それっていつ？」のような続きの質問に使う）
     last_search: dict = {"ctx": None, "turns": 0}
+    # キャラから話しかけた内容（Open-LLM-VTuber は履歴に残さないので、相手が返事をしたときにこちらで足す）
+    last_proactive: dict = {"text": "", "when": 0.0}
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -265,14 +348,28 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
         def _augment(self, req: dict) -> tuple[dict, bytes]:
             """日時と、要るなら検索結果を差し込む。戻り値は (新しいリクエスト, 返事の最後に足す出典)。"""
             msgs = clean_history(req["messages"], search_filler)
+            self._proactive = last_user_text(msgs).startswith(PROACTIVE_MARK)
+            if self._proactive:
+                topic = memory.topic() if memory else "思いついた雑談や、相手への質問をする"
+                log.info("話しかけます（話題: %s）", topic[:60])
+                msgs = [m for m in msgs[:-1]] + [{"role": "user", "content": PROACTIVE_PROMPT.format(topic=topic)}]
+            elif last_proactive["text"] and time.time() - last_proactive["when"] < PROACTIVE_CONTEXT_SECONDS:
+                # 直前にキャラから話しかけていたら、その内容を相手の返事の前に置く
+                k = max(i for i, m in enumerate(msgs) if m.get("role") == "user")
+                msgs = msgs[:k] + [{"role": "assistant", "content": last_proactive["text"]}] + msgs[k:]
+                last_proactive["text"] = ""
             history = list(msgs)
+            if memory:
+                note = memory.context("" if self._proactive else last_user_text(msgs))
+                if note:
+                    msgs = add_note(msgs, note)
             if search_mode != "off":
                 msgs = add_note(msgs, SEARCH_NOTE)
             # 今の日時は最後の発言のすぐ前に置く（キャラ設定の後ろに足すより、小さいモデルでも使ってくれる）
             now = datetime.now()
             msgs = insert_before_last_user(msgs, CLOCK_NOTE.format(
                 now=f"{now:%Y年%m月%d日}（{WEEKDAYS[now.weekday()]}曜日）{now.hour}時{now.minute}分"))
-            text = last_user_text(msgs)
+            text = "" if self._proactive else last_user_text(msgs)
             urls = web_search.find_urls(text) if search_mode != "off" and req.get("stream") else []
             if urls:  # 貼られたページは検索せずに直接読む
                 if search_filler:
@@ -307,12 +404,19 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
         # ---------------- チャット
         def _chat(self, req: dict):
             suffix = b""
+            self._proactive = False
+            user_text = ""
             if isinstance(req.get("messages"), list):
+                user_text = last_user_text(req["messages"])
                 req, suffix = self._augment(req)
             conn, res = self._open(json.dumps(with_defaults(req, model), ensure_ascii=False).encode("utf-8"))
             try:
                 if res.status == 200 and req.get("stream"):
-                    self._stream(res, suffix)
+                    reply = self._stream(res, suffix)
+                    if self._proactive and reply:
+                        last_proactive.update(text=reply, when=time.time())
+                    if memory and reply:
+                        memory.record("" if self._proactive else user_text, reply, proactive=self._proactive)
                 elif self._started:  # 「ちょっと調べるね。」を送ったあとに失敗した
                     log.warning("頭脳がエラーを返しました (%s): %s", res.status, res.read()[:300])
                     self._chunk(STOP_EVENT)
@@ -322,7 +426,7 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             finally:
                 conn.close()
 
-        def _stream(self, res, suffix: bytes):
+        def _stream(self, res, suffix: bytes) -> str:
             """SSE を 1 イベントずつ中継する。suffix（出典）は返事の最後に足す。
             繰り返し（無限ループ）を見つけたら、そこで返事を終わらせる（接続を切って Ollama 側の生成も止める）。"""
             self._start(res)
@@ -345,10 +449,11 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                         log.warning("同じ言葉の繰り返しを見つけたので返事を打ち切りました: …%s", text[-40:])
                         self._chunk(line + b"\n" + suffix + STOP_EVENT)
                         self._end()
-                        return
+                        return text
                 self._chunk(line)
             self._chunk(suffix)
             self._end()
+            return text
 
         def _forward(self):
             self._started = False
@@ -356,6 +461,15 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             body = self.rfile.read(length) if length else b""
             path = urllib.parse.urlparse(self.path).path.rstrip("/")
             try:
+                if self.command == "POST" and path == "/maid/consolidate":  # maid を止めるときに呼ぶ
+                    done = memory.consolidate(tidy=True) if memory else False
+                    out = json.dumps({"ok": True, "consolidated": done}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                    return
                 if self.command == "POST" and path == "/v1/chat/completions":
                     try:
                         req = json.loads(body)
@@ -400,11 +514,22 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--search", choices=("auto", "explicit", "off"), default="off",
                    help="Web 検索: auto=「調べて」と最新情報が要る話題 / explicit=「調べて」と言われたときだけ / off")
     p.add_argument("--search-filler", default="", help="調べ始めるときに先に言う一言（空なら言わない）")
+    p.add_argument("--data", default=None, help="記憶を置くフォルダ（無ければ記憶しない）")
+    p.add_argument("--embed-model", default="bge-m3", help="記憶を探すときに使う、意味のベクトルを作るモデル（空なら言葉の重なりだけで探す）")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-    server = ThreadingHTTPServer((a.host, a.port), make_handler(a.ollama, a.model, a.search, a.search_filler))
+    memory = None
+    if a.data:
+        memory = Memory(Path(a.data), ollama_chat(a.ollama, a.model), ollama_embed(a.ollama, a.embed_model) if a.embed_model else None)
+        threading.Thread(target=memory_worker, args=(memory, threading.Event()), daemon=True).start()
+    server = ThreadingHTTPServer((a.host, a.port), make_handler(a.ollama, a.model, a.search, a.search_filler, memory=memory))
     if a.model:
         threading.Thread(target=preload, args=(a.ollama, a.model), daemon=True).start()
+    if memory and a.embed_model:
+        def prepare_embed():
+            ensure_model(a.ollama, a.embed_model)
+            memory.related("こんにちは")  # 最初の会話で読み込み待ちにならないよう、先に CPU に読み込ませる
+        threading.Thread(target=prepare_embed, daemon=True).start()
     log.info("頭脳の中継: http://%s:%d  →  %s（モデル: %s / 検索: %s）", a.host, a.port, a.ollama, a.model or "そのまま", a.search)
     try:
         server.serve_forever()

@@ -1,4 +1,4 @@
-"""Discord で通話中は、キャラが音声に反応しないようにする中継（ゲート）。
+"""Discord で通話中は、キャラが音声に反応しないようにする中継（ゲート）。キャラから話しかけるきっかけも作る。
 
 画面（Open-LLM-VTuber のデスクトップアプリ / ブラウザ）と Open-LLM-VTuber 本体の間の
 WebSocket を中継し、Discord がマイクを使っている間だけ「マイク音声」と「自発発話の合図」を
@@ -10,6 +10,10 @@ WebSocket を中継し、Discord がマイクを使っている間だけ「マ�
 
 Discord の通話判定には、Windows がアプリごとのマイク使用状況を記録しているレジストリ
 （タスクバーのマイク表示と同じ情報）を使う。Discord は通話中だけマイクを開くので、これで判定できる。
+
+--proactive-minutes を付けると、しばらく会話が無いときに本体へ「話しかけて」の合図（ai-speak-signal）を送る。
+送るのは、相手が PC を使っていて（キーボードかマウスを最近触った）、Discord で通話していないときだけ。
+話題は頭脳の中継が記憶から選ぶ。
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from typing import Callable
 
 from websockets.asyncio.client import connect
@@ -62,13 +67,60 @@ def discord_using_mic() -> bool:
                 return True
 
 
+def seconds_since_input() -> float:
+    """キーボードかマウスを最後に触ってからの秒数。Windows 以外は 0（いつも使っている扱い）。"""
+    if sys.platform != "win32":
+        return 0.0
+    import ctypes
+
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+    info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        return 0.0
+    return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+
+
 class Gate:
-    def __init__(self, backend_url: str, detector: Callable[[], bool], poll_seconds: float = 1.0):
+    def __init__(self, backend_url: str, detector: Callable[[], bool], poll_seconds: float = 1.0,
+                 proactive_seconds: float = 0, away_seconds: float = 900,
+                 idle: Callable[[], float] = seconds_since_input, clock: Callable[[], float] = time.monotonic):
         self.backend_url = backend_url
         self.detector = detector
         self.poll_seconds = poll_seconds
         self.in_call = False
         self.clients: set[ServerConnection] = set()
+        self.backends: dict[ServerConnection, object] = {}
+        # キャラから話しかける: 最後の会話から proactive_seconds たったら。PC から away_seconds 離れていたら話しかけない
+        self.proactive_seconds = proactive_seconds
+        self.away_seconds = away_seconds
+        self.idle = idle
+        self.clock = clock
+        self.last_activity = clock()
+
+    def touch(self) -> None:
+        self.last_activity = self.clock()
+
+    def should_speak(self) -> bool:
+        if not self.proactive_seconds or self.in_call or not self.backends:
+            return False
+        if self.clock() - self.last_activity < self.proactive_seconds:
+            return False
+        try:
+            return self.idle() < self.away_seconds
+        except Exception:
+            return False
+
+    async def speak(self) -> None:
+        """本体に「話しかけて」の合図を送る（いちばん新しくつながった画面の分として）。"""
+        self.touch()
+        backend = list(self.backends.values())[-1]
+        log.info("話しかけの合図を送ります")
+        try:
+            await backend.send(json.dumps({"type": "ai-speak-signal"}))
+        except ConnectionClosed:
+            pass
 
     def refresh(self) -> bool:
         try:
@@ -90,6 +142,8 @@ class Gate:
                         await ws.send(json.dumps({"type": "full-text", "text": text}, ensure_ascii=False))
                     except ConnectionClosed:
                         pass
+            if self.should_speak():
+                await self.speak()
             await asyncio.sleep(self.poll_seconds)
 
     async def handle(self, client: ServerConnection) -> None:
@@ -97,15 +151,19 @@ class Gate:
         self.clients.add(client)
         try:
             async with connect(self.backend_url.rstrip("/") + path, max_size=None) as backend:
+                self.backends[client] = backend
                 await asyncio.gather(self._client_to_backend(client, backend), self._backend_to_client(backend, client))
         except (ConnectionClosed, OSError) as e:
             log.info("接続終了: %s", e)
         finally:
             self.clients.discard(client)
+            self.backends.pop(client, None)
 
     async def _backend_to_client(self, backend, client) -> None:
         try:
             async for msg in backend:
+                if isinstance(msg, str) and msg.startswith('{"type": "audio"'):
+                    self.touch()  # キャラが話している間も「会話中」
                 await client.send(msg)
         finally:
             await client.close()
@@ -137,6 +195,8 @@ class Gate:
                         continue
                 elif msg_type == "ai-speak-signal" and self.in_call:  # 通話中はキャラから話しかけない
                     continue
+                if msg_type in ("mic-audio-end", "text-input"):
+                    self.touch()  # 相手が話した
 
                 await backend.send(raw)
         finally:
@@ -156,9 +216,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=12394)
     p.add_argument("--backend", default="ws://127.0.0.1:12393", help="Open-LLM-VTuber 本体")
+    p.add_argument("--proactive-minutes", type=float, default=0, help="会話がこれだけ無かったらキャラから話しかける（0 で話しかけない）")
+    p.add_argument("--away-minutes", type=float, default=15, help="PC をこれだけ触っていなければ、離れているとみなして話しかけない")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-    gate = Gate(a.backend, discord_using_mic)
+    gate = Gate(a.backend, discord_using_mic, proactive_seconds=a.proactive_minutes * 60, away_seconds=a.away_minutes * 60)
     try:
         asyncio.run(run(a.host, a.port, gate))
     except KeyboardInterrupt:

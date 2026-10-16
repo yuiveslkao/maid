@@ -142,5 +142,68 @@ class DetectorTest(unittest.TestCase):
             self.assertFalse(discord_gate.discord_using_mic())
 
 
+@unittest.skipIf(connect is None, "websockets なし")
+class ProactiveTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import discord_gate
+
+        self.received = []
+
+        async def backend(ws):
+            await ws.send(json.dumps({"type": "full-text", "text": "Connection established"}))
+            async for msg in ws:
+                self.received.append(json.loads(msg)["type"])
+
+        self.backend = await serve(backend, "127.0.0.1", 0)
+        port = self.backend.sockets[0].getsockname()[1]
+        self.now = 0.0
+        self.idle = 0.0
+        self.call = False
+        self.gate = discord_gate.Gate(f"ws://127.0.0.1:{port}", lambda: self.call, poll_seconds=0.02,
+                                      proactive_seconds=900, away_seconds=900,
+                                      idle=lambda: self.idle, clock=lambda: self.now)
+        self.gate_server = await serve(self.gate.handle, "127.0.0.1", 0)
+        self.gate_port = self.gate_server.sockets[0].getsockname()[1]
+        self.watcher = asyncio.create_task(self.gate.watch())
+
+    async def asyncTearDown(self):
+        self.watcher.cancel()
+        self.gate_server.close()
+        self.backend.close()
+
+    async def wait(self):
+        await asyncio.sleep(0.15)
+
+    async def test_speaks_after_quiet_time_only_when_user_is_at_pc(self):
+        async with connect(f"ws://127.0.0.1:{self.gate_port}/client-ws") as ws:
+            await ws.recv()
+            self.now = 600
+            await self.wait()
+            self.assertEqual(self.received, [])        # まだ 15 分たっていない
+            self.idle = 1200
+            self.now = 1000
+            await self.wait()
+            self.assertEqual(self.received, [])        # PC から離れている
+            self.idle = 10
+            await self.wait()
+            self.assertEqual(self.received, ["ai-speak-signal"])
+            await self.wait()
+            self.assertEqual(self.received, ["ai-speak-signal"])  # 続けては話しかけない
+
+    async def test_talking_resets_the_timer_and_call_blocks(self):
+        async with connect(f"ws://127.0.0.1:{self.gate_port}/client-ws") as ws:
+            await ws.recv()
+            self.now = 800
+            await ws.send(json.dumps({"type": "text-input", "text": "やあ"}))
+            await self.wait()
+            self.now = 1000
+            await self.wait()
+            self.assertEqual(self.received, ["text-input"])  # 話してから 15 分たっていない
+            self.call = True
+            self.now = 2000
+            await self.wait()
+            self.assertEqual(self.received, ["text-input"])  # Discord 通話中
+
+
 if __name__ == "__main__":
     unittest.main()
