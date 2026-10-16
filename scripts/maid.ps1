@@ -463,9 +463,9 @@ function Invoke-Doctor {
 function Invoke-Clean {
     if ($Memory) {
         if (Test-Port $Ports.BrainProxy) { throw "先に .\maid.bat stop を実行してください。" }
-        Say "覚えたこと（data\USER.md / MEMORY.md / 前の会話の要約）を消して、次に起動したときに会話の記録（data\log）から覚え直させます。" Yellow
+        Say "覚えたこと（data\PROFILE.md / NOW.md / 前の会話の要約）を消して、次に起動したときに会話の記録（data\log）から覚え直させます。" Yellow
         if ((Read-Host "よければ yes と入力") -ne "yes") { Say "やめました" Gray; return }
-        foreach ($f in @("USER.md", "MEMORY.md", "memory.db", "state.json")) { Remove-Item -Force "$DataDir\$f" -ErrorAction SilentlyContinue }
+        foreach ($f in @("PROFILE.md", "NOW.md", "USER.md", "MEMORY.md", "memory.db", "state.json")) { Remove-Item -Force "$DataDir\$f" -ErrorAction SilentlyContinue }
         Say "消しました。起動して 1 分ほどすると、裏で覚え直しが始まります（.\maid.bat logs brain-proxy で様子が見られます）。" Green
         return
     }

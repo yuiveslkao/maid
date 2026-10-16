@@ -1,15 +1,22 @@
 """記憶（頭脳の中継から使う）。全部 maid\\data\\ に保存し、外には出さない。
 
+覚えるのは「相手（ユーザー）のこと」と「二人の間のこと」だけ。キャラの好みや性格はキャラ設定にあって固定なので覚えない。
+
+- PROFILE.md  相手のプロフィール。長く変わらない性格・傾向・好み・生活（抽象的に。「面倒くさがりなところがある」くらい）
+- NOW.md      今のこと（具体的に。日時付き。期限が来たら自動で消す）
+                [状況] 数時間〜1 日: ごはん・体調・今していること・家にあるもの
+                [約束] 果たされるまで（最長 7 日）: 約束・やりかけ
+                [近況] 数週間: しばらく続いていること（引っ越しの準備中、忙しい時期など）
+- 前の会話     1 回の会話ごとの要約（data\\memory.db。意味の近さで探せるようにベクトルも付ける）
+
 - 会話ログ: 1 往復ごとに data\\log\\日付.jsonl に追記する
-- まとめ: 30 分話さなかったら（と、maid を止めるとき）、まだまとめていない会話を
-    - 要約して「前の会話」として保存する（data\\memory.db。あとで探せるように意味のベクトルも付ける）
-    - 相手について覚えていること（data\\USER.md）とキャラのメモ（data\\MEMORY.md）を書き直す
-      （「熱がある」→「治った」のように、状態が変わったら書き換える）
-- 「覚えて」「忘れて」と言われたら、その場でメモを書き直す
-- 会話のたびに、メモと、今の話に関係ありそうな前の会話を頭脳に渡す
+- まとめ: 30 分話さなかったら（と、maid を止めるとき）、まだまとめていない会話から
+  覚えておくことを種類付きで書き出させ、それぞれに振り分ける
+- 「覚えて」「忘れて」と言われたら、その場で反映する
+- 会話のたびに、PROFILE と NOW と、今の話に関係ありそうな前の会話を頭脳に渡す
 - キャラから話しかけるときの話題の種を出す
 
-USER.md / MEMORY.md はメモ帳で開いて直してよい。書き直す前の版は data\\history\\ に残る。
+PROFILE.md / NOW.md はメモ帳で開いて直してよい。PROFILE.md の書き直す前の版は data\\history\\ に残る。
 """
 
 from __future__ import annotations
@@ -29,7 +36,10 @@ from typing import Callable
 log = logging.getLogger("memory")
 
 IDLE_MINUTES = 30          # これだけ話さなかったら、それまでの会話をまとめる
-MAX_NOTE_LINES = 40        # メモ 1 つの最大行数
+MAX_NOTE_LINES = 25        # PROFILE.md の最大行数
+# NOW.md の種類と、覚えておく長さ
+NOW_KINDS = {"状況": timedelta(days=1), "約束": timedelta(days=7), "近況": timedelta(days=30)}
+NOW_LINE_RE = re.compile(r"^- \[(状況|約束|近況)\] (.+?)（(\d{4}-\d{2}-\d{2} \d{2}:\d{2})）$")
 RELATED_EPISODES = 3       # 会話のたびに渡す「前の会話」の数
 MIN_SIMILARITY = 0.5       # これより似ていない前の会話は渡さない
 HISTORY_KEEP = 30          # 書き直す前のメモをいくつ残すか
@@ -41,32 +51,33 @@ EPISODE_PROMPT = (
     "何を話したか・相手の様子や出来事・約束したことを、3〜5 文の日本語で要約してください。"
     "相手は「相手」、キャラは「キャラ」と書く。要約だけを出力する。"
 )
-# 会話から「覚えておくこと」を、誰のことかを付けて書き出させる（小さいモデルは誰の発言かを取り違えやすいので、
-# 書き出しと、メモへの書き込みを分ける）
+# 会話から「覚えておくこと」を、種類を付けて書き出させる（小さいモデルは、会話を丸ごと渡してメモを書かせると
+# 誰の発言かを取り違えたり、その場の思いつきを好みとして書いたりするので、書き出しと振り分けを分ける）
 FACTS_PROMPT = (
     "あなたは記憶係です。次は「相手」（ユーザー。人間）と「キャラ」（AI のキャラクター）の会話です。"
-    "あとで覚えておくとよいことを 1 行ずつ書き出してください。各行は次のどちらかで始める:\n"
-    "相手: … 相手自身のこと（相手が自分について言ったこと・したこと・これからすること・体調・好み・生活）\n"
-    "キャラ: … キャラ自身のこと（キャラが言った自分の好き嫌いや気持ち・キャラが約束したこと・キャラが次に話したいこと）\n"
+    "次に話すときに知っておくとよいことを、1 行ずつ、次のどれかで始めて書き出してください。\n"
+    "プロフィール: 相手の長く変わらない性格・傾向・好み・生活。具体的な出来事は一般化して抽象的に書く"
+    "（例:「ハンバーグは作るのが大変」→「手間のかかることは面倒くさがる」）\n"
+    "状況: 今日〜明日くらいの、相手の具体的な状況（ごはん・体調・今していること・これからすること・家にあるもの）\n"
+    "約束: 相手とキャラの約束や、やりかけのこと（例:「今度オムライスを作る」）\n"
+    "近況: 数週間続く、相手の具体的なこと（例:「引っ越しの準備中」）\n"
+    "済み: 果たされた約束・終わったこと・治ったこと（前に覚えたことを消すため）\n"
+    "忘れる: 相手が「忘れて」と言ったこと\n"
     "注意:\n"
-    "- 好き嫌いや気持ちは、それを言った本人のこととして書く（キャラが「オムライスがすき」と言ったら「キャラ: オムライスが好き」）。\n"
-    "- 相手が質問しただけのことを、相手の好みにしない。\n"
-    "- 相手が「忘れて」と言ったら「相手: 〜は忘れてほしい」と書く。\n"
-    "- 覚えるほどでもない雑談は書かない。何も無ければ「なし」とだけ出力する。"
+    "- キャラ自身の好み・気持ち・希望は書かない（キャラが「ハンバーグがいい」と言っても書かない）。\n"
+    "- 相手が質問しただけのことは書かない。その会話の中だけのやりとりや雑談は書かない。\n"
+    "- 何も無ければ「なし」とだけ出力する。"
 )
-NOTES_RULES = (
-    "【新しくわかったこと】を【今のメモ】に反映した全文を出力してください。ルール:\n"
-    "- 新しいことは足す。同じことはまとめる。\n"
-    "- 状態が変わったら書き換える（例:「熱がある」のあとに治ったとわかったら「熱は治った（{today}）」にする）。\n"
-    "- 古くなって意味がなくなったものと、「忘れてほしい」と言われたものは消す。\n"
-    "- 1 行に 1 つ、「- 」で始める。体調や予定のように変わるものには（月/日）を付ける。{max_lines} 行まで。\n"
-    "- 書いてないことや推測は足さない。メモの全文だけを出力する。"
+PROFILE_PROMPT = (
+    "あなたは記憶係です。【今のプロフィール】は、相手（ユーザー。人間）の長く変わらない性格・傾向・好み・生活の箇条書きです。"
+    "【足すこと】と【忘れること】を反映した全文を出力してください。ルール:\n"
+    "- 抽象度を高く保つ。具体的な出来事ではなく、傾向として書く（「面倒くさがりなところがある」「辛いものが苦手」など）。\n"
+    "- 似たものはまとめる。矛盾したら新しい方を残す。【忘れること】は消す。\n"
+    "- 1 行に 1 つ、「- 」で始める。{max_lines} 行まで。書いてないことや推測は足さない。全文だけを出力する。"
 )
-USER_NOTES_PROMPT = "あなたは記憶係です。【今のメモ】は、相手（ユーザー。人間）について覚えていること（事実・好み・生活・体調・最近していること）です。\n" + NOTES_RULES
-CHAR_NOTES_PROMPT = ("あなたは記憶係です。【今のメモ】は、キャラ自身の覚え書き（キャラの好き嫌い・相手との思い出・約束・"
-                     "キャラが最近気になっていること・次に話したいこと）です。キャラの性格や口調は書かない。\n" + NOTES_RULES)
-TIDY_PROMPT = ("あなたは記憶係です。【今のメモ】を整理してください。同じ内容はまとめ、矛盾するものは新しい方を残し、"
-               "古くて意味がなくなったものは消す。1 行に 1 つ、「- 」で始める。{max_lines} 行まで。整理したメモの全文だけを出力する。")
+TIDY_PROMPT = ("あなたは記憶係です。【今のプロフィール】は相手（ユーザー）の性格・傾向・好み・生活です。整理してください。"
+               "同じ内容はまとめ、矛盾するものは新しい方を残し、具体的すぎるものは傾向として抽象的に書き直す。"
+               "1 行に 1 つ、「- 」で始める。{max_lines} 行まで。整理した全文だけを出力する。")
 
 CONTEXT_HEAD = "【あなたが覚えていること。会話に関係があるときだけ自然に使い、全部を言わない】"
 
@@ -95,8 +106,8 @@ class Memory:
         self.work_lock = threading.RLock()  # 記憶のまとめ（頭脳を使うので長い）。会話はこれを待たない
         (self.dir / "log").mkdir(parents=True, exist_ok=True)
         (self.dir / "history").mkdir(exist_ok=True)
-        self.user_md = self.dir / "USER.md"
-        self.char_md = self.dir / "MEMORY.md"
+        self.profile_md = self.dir / "PROFILE.md"
+        self.now_md = self.dir / "NOW.md"
         self.state_path = self.dir / "state.json"
         self.db = sqlite3.connect(self.dir / "memory.db", check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY, started TEXT, ended TEXT, summary TEXT, embedding TEXT)")
@@ -178,8 +189,8 @@ class Memory:
             with self.lock:
                 self._save_state(summarized_until=session[-1].when.isoformat(timespec="seconds"))
         if tidy:
-            for path in (self.user_md, self.char_md):
-                self._rewrite(path, TIDY_PROMPT.format(max_lines=MAX_NOTE_LINES), "")
+            self._rewrite(self.profile_md, TIDY_PROMPT.format(max_lines=MAX_NOTE_LINES), "")
+            self.write_now(self.now_items())  # 期限切れを消す
         return bool(turns)
 
     def sessions(self, turns: list[Turn]) -> list[list[Turn]]:
@@ -191,35 +202,69 @@ class Memory:
                 out.append([t])
         return out
 
-    def facts(self, turns: list[Turn]) -> tuple[list[str], list[str]]:
-        """会話から覚えておくことを書き出し、（相手のこと, キャラのこと）に分ける。"""
+    def facts(self, turns: list[Turn]) -> dict[str, list[str]]:
+        """会話から覚えておくことを書き出し、種類ごとに分ける。"""
         talk = "\n".join(line for t in turns for line in t.lines())
         answer = self._ask([{"role": "system", "content": FACTS_PROMPT}, {"role": "user", "content": talk}], 600)
-        user, char = [], []
+        out: dict[str, list[str]] = {k: [] for k in ("プロフィール", *NOW_KINDS, "済み", "忘れる")}
         for line in answer.splitlines():
             line = line.strip().lstrip("-・* ").strip()
-            for prefix, bucket in (("相手:", user), ("相手：", user), ("キャラ:", char), ("キャラ：", char)):
-                if line.startswith(prefix) and line[len(prefix):].strip():
-                    bucket.append(line[len(prefix):].strip())
-        return user, char
+            kind, sep, text = line.replace("：", ":").partition(":")
+            if sep and kind.strip() in out and text.strip():
+                out[kind.strip()].append(text.strip())
+        return out
 
     def update_notes(self, turns: list[Turn]) -> None:
         with self.work_lock:
-            today = f"{turns[-1].when:%m/%d}" if turns else f"{datetime.now():%m/%d}"
-            user, char = self.facts(turns)
-            for path, prompt, facts in ((self.user_md, USER_NOTES_PROMPT, user), (self.char_md, CHAR_NOTES_PROMPT, char)):
-                if facts:
-                    self._rewrite(path, prompt.format(today=today, max_lines=MAX_NOTE_LINES), "\n".join(f"- {f}" for f in facts))
+            when = turns[-1].when if turns else datetime.now()
+            f = self.facts(turns)
+            # NOW.md: 済み・忘れることを消して、新しいことを足す（頭脳に書き直させず、プログラムで行う）
+            gone = f["済み"] + f["忘れる"]
+            items = [it for it in self.now_items(when)
+                     if not any(max(overlap(g, it[1]), overlap(it[1], g)) >= 0.4 for g in gone)]
+            for kind in NOW_KINDS:
+                for text in f[kind]:
+                    if not any(k == kind and overlap(text, t) >= 0.8 for k, t, _ in items):
+                        items.append((kind, text, when))
+            self.write_now(items)
+            # PROFILE.md: 足すこと・忘れることがあるときだけ、頭脳に書き直させる
+            if f["プロフィール"] or f["忘れる"]:
+                change = "【足すこと】\n" + ("\n".join(f"- {x}" for x in f["プロフィール"]) or "（なし）")
+                change += "\n\n【忘れること】\n" + ("\n".join(f"- {x}" for x in f["忘れる"]) or "（なし）")
+                self._rewrite(self.profile_md, PROFILE_PROMPT.format(max_lines=MAX_NOTE_LINES), change)
+
+    # ---------------------------------------------------------------- NOW.md
+    def now_items(self, now: datetime | None = None) -> list[tuple[str, str, datetime | None]]:
+        """NOW.md の中身（期限切れは除く）。手で書いた日時の無い行は、ずっと残す。"""
+        now = now or datetime.now()
+        items = []
+        for line in self.read_note(self.now_md).splitlines():
+            m = NOW_LINE_RE.match(line.strip())
+            if m:
+                when = datetime.strptime(m.group(3), "%Y-%m-%d %H:%M")
+                if now - when < NOW_KINDS[m.group(1)]:
+                    items.append((m.group(1), m.group(2), when))
+            elif line.strip().startswith("- "):
+                items.append(("メモ", line.strip()[2:], None))
+        return items
+
+    def write_now(self, items: list[tuple[str, str, datetime | None]]) -> None:
+        lines = [f"- {text}" if when is None else f"- [{kind}] {text}（{when:%Y-%m-%d %H:%M}）" for kind, text, when in items]
+        text = "\n".join(lines) + ("\n" if lines else "")
+        with self.lock:
+            if text != (self.now_md.read_text(encoding="utf-8") if self.now_md.exists() else ""):
+                self.now_md.write_text(text, encoding="utf-8")
+                log.info("NOW.md を更新しました（%d 行）", len(lines))
 
     def _rewrite(self, path: Path, prompt: str, talk: str) -> None:
         old = self.read_note(path)
         if not old and not talk:
             return
-        content = f"【今のメモ】\n{old or '（まだ無い）'}" + (f"\n\n【新しくわかったこと】\n{talk}" if talk else "")
+        content = f"【今のプロフィール】\n{old or '（まだ無い）'}" + (f"\n\n{talk}" if talk else "")
         answer = self._ask([{"role": "system", "content": prompt}, {"role": "user", "content": content}], 1200)
         lines = [ln.strip() for ln in answer.splitlines() if ln.strip().startswith("- ")][:MAX_NOTE_LINES]
         new = "\n".join(lines)
-        forget = bool(re.search(r"忘れ|わすれ", talk))
+        forget = "【忘れること】\n- " in talk
         # 頭脳がうまく書けなかったとき（空・半分以下に減った）は、忘れてと言われていない限り書き換えない
         if not new or (old and not forget and len(lines) < len(old.splitlines()) / 2):
             if answer:
@@ -300,39 +345,55 @@ class Memory:
 
     def context(self, query: str) -> str:
         """頭脳に渡す「覚えていること」。"""
+        now = datetime.now()
         parts = []
-        user, char = self.read_note(self.user_md), self.read_note(self.char_md)
-        if user:
-            parts.append("相手について:\n" + user)
-        if char:
-            parts.append("あなたのメモ:\n" + char)
+        profile = self.read_note(self.profile_md)
+        if profile:
+            parts.append("相手について:\n" + profile)
+        items = self.now_items(now)
+        if items:
+            parts.append("相手の今のこと:\n" + "\n".join(
+                f"- {text}" if when is None else f"- [{kind}] {text}（{ago(when, now)}）" for kind, text, when in items))
         rel = self.related(query)
         if rel:
-            parts.append("関係がありそうな前の会話:\n" + "\n".join(f"- {s[5:10].replace('-', '/')}: {t}" for s, t in rel))
+            parts.append("関係がありそうな前の会話:\n" + "\n".join(f"- {ago(datetime.fromisoformat(s), now)}: {t}" for s, t in rel))
         return CONTEXT_HEAD + "\n" + "\n\n".join(parts) if parts else ""
 
     # ---------------------------------------------------------------- 話しかける話題
     def topic(self, rng: random.Random | None = None) -> str:
-        """キャラから話しかけるときの話題の種。前の会話・相手のこと・キャラの関心・励まし・雑談から選ぶ。"""
+        """キャラから話しかけるときの話題の種。今のこと・前の会話・相手のこと・励まし・雑談から選ぶ。"""
         rng = rng or random.Random()
+        now = datetime.now()
         recent = self.episodes()[-5:]
-        user = [ln[2:] for ln in self.read_note(self.user_md).splitlines() if ln.startswith("- ")]
-        char = [ln[2:] for ln in self.read_note(self.char_md).splitlines() if ln.startswith("- ")]
-        hour = datetime.now().hour
+        items = self.now_items(now)
+        profile = [ln[2:] for ln in self.read_note(self.profile_md).splitlines() if ln.startswith("- ")]
+        promises = [it for it in items if it[0] == "約束"]
+        states = [it for it in items if it[0] != "約束"]
         choices = [
-            ("前の会話の続き", lambda: "この前の話の続きを聞く。前の会話: " + rng.choice(recent)[2]) if recent else None,
-            ("相手のこと", lambda: "相手について覚えていることに触れて、気にかけたり質問したりする: " + rng.choice(user)) if user else None,
-            ("自分の関心", lambda: "自分が最近気になっていることや話したいことを話す: " + rng.choice(char)) if char else None,
-            ("励まし", lambda: "相手が今していることを応援したり、がんばりをほめたりする"),
-            ("休憩", lambda: "相手を気づかう（休憩・水分・姿勢など）。押しつけない"),
-            ("時間帯", lambda: f"今の時間（{hour} 時ごろ）らしい話をする（ごはん・眠さ・一日の様子など）"),
-            ("雑談", lambda: "思いついた雑談や、相手への質問をする（好きなもの・最近のこと・今日あったこと）"),
+            ("約束", 4, lambda: "約束ややりかけのことに触れる（楽しみにしている・どうなったか聞く）: " + rng.choice(promises)[1]) if promises else None,
+            ("今のこと", 4, lambda: "相手の今の状況を気にかけたり、どうなったか聞いたりする: " + rng.choice(states)[1]) if states else None,
+            ("前の会話の続き", 3, lambda: "この前の話の続きを聞く。前の会話: " + rng.choice(recent)[2]) if recent else None,
+            ("相手のこと", 2, lambda: "相手の性格や好みに合わせた話をする: " + rng.choice(profile)) if profile else None,
+            ("励まし", 1, lambda: "相手が今していることを応援したり、がんばりをほめたりする"),
+            ("休憩", 1, lambda: "相手を気づかう（休憩・水分・姿勢など）。押しつけない"),
+            ("時間帯", 1, lambda: f"今の時間（{now.hour} 時ごろ）らしい話をする（ごはん・眠さ・一日の様子など）"),
+            ("雑談", 1, lambda: "思いついた雑談や、相手への質問をする（好きなもの・最近のこと・今日あったこと）"),
         ]
         choices = [c for c in choices if c]
-        # 覚えていることがあるときは、それに基づく話題を多めに
-        weights = [3 if name in ("前の会話の続き", "相手のこと", "自分の関心") else 1 for name, _ in choices]
-        name, make = rng.choices(choices, weights=weights)[0]
+        _, _, make = rng.choices(choices, weights=[w for _, w, _ in choices])[0]
         return make()
+
+
+def ago(when: datetime, now: datetime) -> str:
+    """「さっき」「3 時間前」「昨日」「5 日前」。"""
+    d = now - when
+    if d < timedelta(hours=1):
+        return "さっき"
+    if d < timedelta(days=1):
+        return f"{int(d.total_seconds() // 3600)} 時間前"
+    if d < timedelta(days=2):
+        return "昨日"
+    return f"{d.days} 日前"
 
 
 def overlap(a: str, b: str) -> float:

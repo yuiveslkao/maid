@@ -30,22 +30,25 @@ class FakeBrain:
         if system == mem.FACTS_PROMPT:
             facts = []
             if "熱があるんだ" in user:
-                facts.append("相手: 熱がある")
+                facts.append("状況: 熱がある")
             if "治った" in user:
-                facts.append("相手: 熱は治った")
+                facts.append("済み: 熱がある")
             if "ゲームが好き" in user:
-                facts.append("相手: ゲームが好き")
-            if "オムライスがすき" in user:
-                facts.append("キャラ: オムライスが好き")
-            return "\n".join(facts) or "なし"
-        old, _, new = user.partition("【新しくわかったこと】")
+                facts.append("プロフィール: ゲームが好き")
+            if "また今度ね" in user:
+                facts.append("約束: 今度オムライスを作る")
+            if "オムライス作ったよ" in user:
+                facts.append("済み: オムライスを作る")
+            if "ハンバーグは作るの大変" in user:
+                facts.append("プロフィール: 手間のかかることは面倒くさがる")
+            if "引っ越し" in user:
+                facts.append("近況：引っ越しの準備中")  # 全角のコロンでも読める
+            return "\n".join(f"- {x}" for x in facts) or "なし"
+        # プロフィールの書き直し: 今の行に【足すこと】を足す
+        old, _, change = user.partition("【足すこと】")
+        add, _, _ = change.partition("【忘れること】")
         lines = [ln for ln in old.splitlines() if ln.startswith("- ")]
-        for fact in new.splitlines():
-            if "治った" in fact:
-                lines = [ln for ln in lines if "熱がある" not in ln]
-            if fact.startswith("- "):
-                lines.append(fact)
-        return "\n".join(lines)
+        return "\n".join(lines + [ln for ln in add.splitlines() if ln.startswith("- ")])
 
 
 def fake_embed(texts):
@@ -64,61 +67,78 @@ class MemoryTest(unittest.TestCase):
         self.m.db.close()
         self.tmp.cleanup()
 
+    def now_text(self):
+        return self.m.read_note(self.m.now_md)
+
     def test_consolidates_after_idle_and_updates_state(self):
         self.m.record("熱があるんだ", "だいじょうぶ？", when=self.t0)
         self.m.record("", "おくすり飲んだ？", proactive=True, when=self.t0 + timedelta(minutes=5))
         self.assertFalse(self.m.maybe_consolidate(self.t0 + timedelta(minutes=20)))  # まだ 30 分たっていない
         self.assertTrue(self.m.maybe_consolidate(self.t0 + timedelta(minutes=40)))
         self.assertEqual(self.m.pending(), [])
-        self.assertIn("熱がある", self.m.read_note(self.m.user_md))
+        self.assertEqual(self.now_text(), "- [状況] 熱がある（2026-10-15 20:05）")
         self.assertEqual(len(self.m.episodes()), 1)
         # 会話の記録には、キャラから話しかけた分も「キャラ:」として入る
         talk = [u for s, u in self.brain.calls if s == mem.EPISODE_PROMPT][0]
         self.assertEqual(talk, "相手: 熱があるんだ\nキャラ: だいじょうぶ？\nキャラ: おくすり飲んだ？")
-
-        # 状態が変わったら書き換わる。前の版は history に残る
-        later = self.t0 + timedelta(days=1)
-        self.m.record("熱は治ったよ", "よかった！", when=later)
+        # 治ったと聞いたら消える
+        self.m.record("熱は治ったよ", "よかった！", when=self.t0 + timedelta(hours=5))
         self.m.consolidate()
-        self.assertIn("熱は治った", self.m.read_note(self.m.user_md))
-        self.assertNotIn("熱がある", self.m.read_note(self.m.user_md))
-        self.assertEqual(len(list((Path(self.tmp.name) / "history").glob("USER-*.md"))), 1)
+        self.assertEqual(self.now_text(), "")
 
-    def test_character_likes_go_to_character_notes(self):
-        self.m.record("お昼何食べたい？", "オムライスがすき！", when=self.t0)
+    def test_kinds_go_to_the_right_place(self):
+        self.m.record("ゲームが好きなんだ", "そうなんだ！", when=self.t0)
+        self.m.record("オムライスはまた今度ね", "うん！", when=self.t0)
+        self.m.record("ハンバーグは作るの大変なんだよね", "そっかー", when=self.t0)
+        self.m.record("最近引っ越しの準備で忙しい", "がんばって！", when=self.t0)
         self.m.consolidate()
-        self.assertEqual(self.m.read_note(self.m.user_md), "")
-        self.assertEqual(self.m.read_note(self.m.char_md), "- オムライスが好き")
+        self.assertEqual(self.m.read_note(self.m.profile_md), "- ゲームが好き\n- 手間のかかることは面倒くさがる")
+        self.assertEqual(self.now_text(), "- [約束] 今度オムライスを作る（2026-10-15 20:00）\n- [近況] 引っ越しの準備中（2026-10-15 20:00）")
+        # 約束が果たされたら消える
+        self.m.record("オムライス作ったよ", "おいしい！", when=self.t0 + timedelta(days=1))
+        self.m.consolidate()
+        self.assertEqual(self.now_text(), "- [近況] 引っ越しの準備中（2026-10-15 20:00）")
 
-    def test_sessions_are_summarized_separately(self):
-        self.m.record("熱があるんだ", "だいじょうぶ？", when=self.t0)
-        self.m.record("熱は治ったよ", "よかった！", when=self.t0 + timedelta(hours=3))
+    def test_now_expires(self):
+        self.m.write_now([("状況", "夜ごはんはアジフライ", self.t0), ("約束", "今度オムライス", self.t0),
+                          ("近況", "引っ越しの準備中", self.t0), ("メモ", "手で書いた行", None)])
+        texts = lambda days: [t for _, t, _ in self.m.now_items(self.t0 + timedelta(days=days))]  # noqa: E731
+        self.assertEqual(texts(0.5), ["夜ごはんはアジフライ", "今度オムライス", "引っ越しの準備中", "手で書いた行"])
+        self.assertEqual(texts(2), ["今度オムライス", "引っ越しの準備中", "手で書いた行"])
+        self.assertEqual(texts(10), ["引っ越しの準備中", "手で書いた行"])
+        self.assertEqual(texts(40), ["手で書いた行"])
+
+    def test_character_wishes_are_not_kept(self):
+        self.m.record("何が食べたい？", "ハンバーグがいいな", when=self.t0)
         self.m.consolidate()
-        self.assertEqual(len(self.m.episodes()), 2)
-        self.assertEqual(self.m.read_note(self.m.user_md), "- 熱は治った")
+        self.assertEqual(self.m.read_note(self.m.profile_md), "")
+        self.assertEqual(self.now_text(), "")
 
     def test_bad_rewrite_is_ignored(self):
-        self.m.user_md.write_text("- a\n- b\n- c\n- d\n", encoding="utf-8")
-        self.m.llm = lambda messages, n: "わかりました！"  # 箇条書きになっていない
+        self.m.profile_md.write_text("- a\n- b\n- c\n- d\n", encoding="utf-8")
+        self.m.llm = lambda messages, n: "プロフィール: e" if messages[0]["content"] == mem.FACTS_PROMPT else "わかりました！"
         self.m.update_notes([mem.Turn(self.t0, "やあ", "うん")])
-        self.assertEqual(self.m.read_note(self.m.user_md), "- a\n- b\n- c\n- d")
+        self.assertEqual(self.m.read_note(self.m.profile_md), "- a\n- b\n- c\n- d")
 
     def test_remember_now(self):
         self.m.record("ゲームが好きって覚えておいて", "うん、覚えた！", when=self.t0)
         for _ in range(50):
-            if self.m.user_md.exists():
+            if self.m.profile_md.exists():
                 break
             time.sleep(0.02)
-        self.assertIn("ゲームが好き", self.m.read_note(self.m.user_md))
+        self.assertIn("ゲームが好き", self.m.read_note(self.m.profile_md))
 
     def test_related_and_context(self):
-        self.m.add_episode(self.t0, self.t0, "相手は熱があると言っていた。")
-        self.m.add_episode(self.t0, self.t0, "相手とゲームの話をした。")
+        now = datetime.now()
+        self.m.add_episode(now - timedelta(days=1, hours=1), now - timedelta(days=1), "相手は熱があると言っていた。")
+        self.m.add_episode(now, now, "相手とゲームの話をした。")
         self.assertEqual([t for _, t in self.m.related("熱は下がった？")], ["相手は熱があると言っていた。"])
-        self.m.user_md.write_text("- ゲームが好き\n", encoding="utf-8")
+        self.m.profile_md.write_text("- ゲームが好き\n", encoding="utf-8")
+        self.m.write_now([("状況", "夜ごはんはアジフライ", now - timedelta(hours=2))])
         ctx = self.m.context("熱は下がった？")
         self.assertIn("相手について:\n- ゲームが好き", ctx)
-        self.assertIn("10/15: 相手は熱があると言っていた。", ctx)
+        self.assertIn("相手の今のこと:\n- [状況] 夜ごはんはアジフライ（2 時間前）", ctx)
+        self.assertIn("- 昨日: 相手は熱があると言っていた。", ctx)
         self.assertEqual(mem.Memory(Path(self.tmp.name) / "empty", self.brain).context("やあ"), "")
 
     def test_chat_does_not_wait_for_consolidation(self):
@@ -146,8 +166,10 @@ class MemoryTest(unittest.TestCase):
     def test_topic(self):
         self.assertTrue(self.m.topic(random.Random(0)))  # 何も覚えていなくても話題は出る
         self.m.add_episode(self.t0, self.t0, "相手はテスト勉強をしていた。")
+        self.m.write_now([("約束", "今度オムライスを作る", datetime.now())])
         topics = {self.m.topic(random.Random(i)) for i in range(40)}
         self.assertTrue(any("テスト勉強" in t for t in topics))
+        self.assertTrue(any("今度オムライスを作る" in t for t in topics))
 
 
 class FakeOllama(BaseHTTPRequestHandler):
@@ -184,7 +206,7 @@ class ProxyMemoryTest(unittest.TestCase):
         FakeOllama.requests.clear()
         self.tmp = tempfile.TemporaryDirectory()
         self.m = mem.Memory(Path(self.tmp.name), FakeBrain(), fake_embed)
-        self.m.user_md.write_text("- テスト勉強をしている\n", encoding="utf-8")
+        self.m.profile_md.write_text("- テスト勉強をしている\n", encoding="utf-8")
         self.ollama = serve(FakeOllama)
         self.proxy = serve(llm_proxy.make_handler(f"http://127.0.0.1:{self.ollama.server_port}", memory=self.m))
         self.base = f"http://127.0.0.1:{self.proxy.server_port}"
