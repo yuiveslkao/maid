@@ -7,7 +7,10 @@
   "search": "auto",
   "search_filler": "ちょっと調べるね。",
   "vrm": "",
-  "vrm_view": "bust",
+  "vrm_view": "auto",
+  "app": true,
+  "character_on_top": false,
+  "character_click_through": true,
   "proactive_minutes": 15,
   "embed_model": "bge-m3"
 }

@@ -58,7 +58,7 @@ $ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"   # 音声認�
 # 3D 表示に使うライブラリ（npm の配布物から必要なファイルだけ取り出す）
 $VrmLibs = @{ "three" = "https://registry.npmjs.org/three/-/three-0.185.1.tgz"; "three-vrm" = "https://registry.npmjs.org/@pixiv/three-vrm/-/three-vrm-3.5.5.tgz" }
 # maid の部品が使うライブラリ（検索・本文の抜き出し・PDF・Discord ゲート）
-$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13")
+$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13", "pywebview", "pystray", "pillow")  # 後ろ 3 つは maid のアプリ（WebView2・タスクトレイ）
 
 # ------------------------------------------------------------------ 設定（maid.settings.json）
 # 無ければ config\maid.settings.default.json をコピーして作る。書かれていない項目は既定値を使う
@@ -82,7 +82,12 @@ if ($null -eq $UserSettings.search_filler) { $SearchFiller = [string]$Defaults.s
 $Vrm = [string](Get-Setting "vrm")                     # 3D モデル (.vrm) のパス。空なら Live2D
 # 「models/xxx.vrm」のような書き方は maid フォルダからの場所とみなす
 if ($Vrm -and -not [IO.Path]::IsPathRooted($Vrm)) { $Vrm = Join-Path $Root $Vrm }
-$VrmView = [string](Get-Setting "vrm_view")            # bust（胸から上）/ full（全身）
+$VrmView = [string](Get-Setting "vrm_view")            # auto / bust（胸から上）/ full（全身）
+$UseApp = [bool](Get-Setting "app")                     # maid のアプリ（タスクトレイ・デスクトップのキャラ・チャットのウィンドウ）。false なら Edge で開く
+$CharacterOnTop = [bool](Get-Setting "character_on_top")              # デスクトップのキャラをいつも手前に出す
+$CharacterClickThrough = [bool](Get-Setting "character_click_through")  # デスクトップのキャラのクリックをすり抜けさせる
+$Desktop = $UseApp -and [bool]$Vrm                      # デスクトップにキャラを出すか（アプリで、3D モデルがあるとき）
+if ($VrmView -eq "auto" -or -not $VrmView) { $VrmView = if ($Desktop) { "full" } else { "bust" } }
 $Mic = if ([bool](Get-Setting "mic")) { "on" } else { "off" }   # マイクを使うか（off = キーボードだけ）
 $ProactiveMinutes = [double](Get-Setting "proactive_minutes")  # 会話がこれだけ無かったらキャラから話しかける（0 で話しかけない）
 $EmbedModel = [string]$UserSettings.embed_model           # 記憶を探すモデル（空なら言葉の重なりだけで探す）
@@ -174,11 +179,12 @@ function Install-MaidVenv {
 # 裏で動く部品はウィンドウを出さず、出力を runtime\logs\<名前>.log に書く。
 # （コンソールに出すと、ウィンドウをクリックして「選択」状態になったとき部品ごと止まってしまうため）
 # start.bat のウィンドウにぶら下がるので、そこで Ctrl+C すると一緒に止まる
-function Start-Part([string]$Name, [string]$Exe, [string[]]$ArgList, [string]$Dir = $Root) {
+function Start-Part([string]$Name, [string]$Exe, [string[]]$ArgList, [string]$Dir = $Root, [switch]$PassThru) {
     New-Item -ItemType Directory -Force -Path $P.Logs | Out-Null
     $out = "$($P.Logs)\$Name.log"; $err = "$($P.Logs)\$Name.err.log"
     foreach ($f in @($out, $err)) { if (Test-Path $f) { Remove-Item -Force $f -ErrorAction SilentlyContinue } }
-    Start-Process -FilePath $Exe -ArgumentList $ArgList -WorkingDirectory $Dir -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err | Out-Null
+    $proc = Start-Process -FilePath $Exe -ArgumentList $ArgList -WorkingDirectory $Dir -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
+    if ($PassThru) { return $proc }
 }
 
 # maid の部品（Python 製）を起動する。引数に空白が入りうるものは呼ぶ側で引用符を付ける
@@ -363,31 +369,47 @@ function Invoke-Start {
         $ws = "ws://127.0.0.1:$($Ports.Gate)/client-ws"
     } else {
         Say "  Discord ゲートが起動しないので、使わずに直結します（.\maid.bat logs discord-gate）" Yellow
+        if ($Desktop) { Say "  ゲートが無いとデスクトップのキャラは声を受け取れないので、キャラは画面の中に出します" Yellow; $Desktop = $false }
     }
-    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs", "--vrm=$Vrm", "--vrm-view=$VrmView", "--mic=$Mic"))) {
+    $desktopArg = if ($Desktop) { "on" } else { "off" }
+    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs", "--vrm=$Vrm", "--vrm-view=$VrmView", "--mic=$Mic", "--desktop=$desktopArg"))) {
         Say "  画面と conf.yaml の準備に失敗しました（今の設定のまま起動します）" Yellow
     }
     if (-not (Test-Port $Ports.Olv)) { Start-Part "open-llm-vtuber" $P.OlvPy @("run_server.py") $P.Olv }
     Wait-Parts
 
     Say ("  頭脳: $Model / 声: $Voice / 検索: $Search （起動 {0:N0} 秒）" -f $sw.Elapsed.TotalSeconds) Gray
-    # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）。?t= は古いページを使い回させないため
-    Start-Process "msedge.exe" "--app=$OlvUrl/?t=$([DateTimeOffset]::Now.ToUnixTimeSeconds())"
-    Say "`n準備完了。画面を閉じても裏の部品は動き続けます。ログ: .\maid.bat logs <名前>" Green
-    Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
+    $t = [DateTimeOffset]::Now.ToUnixTimeSeconds()   # ?t= は古いページを使い回させないため
+    $app = $null
+    if ($UseApp) {
+        # maid のアプリ（WebView2。Windows に標準）。画面の設定やマイクの許可は runtime\webview に保存する
+        $a = @("`"$Root\app\maid_app.py`"", "--chat-url", "$OlvUrl/?t=$t", "--storage", "`"$Rt\webview`"")
+        if ($Desktop) { $a += @("--character-url", "$OlvUrl/maid-vrm/character.html?t=$t") }
+        if ($CharacterOnTop) { $a += "--on-top" }
+        if (-not $CharacterClickThrough) { $a += "--no-click-through" }
+        $app = Start-Part "app" $P.MaidPy $a -PassThru
+        Say "`n準備完了。画面右下のタスクトレイのアイコンから、チャットを開く・キャラを隠す・終了ができます。" Green
+        Say "（ログ: .\maid.bat logs <名前>。このウィンドウで Ctrl+C でも全部止まります）" Green
+    } else {
+        # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）
+        Start-Process "msedge.exe" "--app=$OlvUrl/?t=$t"
+        Say "`n準備完了。画面を閉じても裏の部品は動き続けます。ログ: .\maid.bat logs <名前>" Green
+        Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
+    }
     # Ctrl+C はこのウィンドウの部品全部に届いてしまう（頭脳が先に止まって記憶をまとめられない）。
     # なので待っている間は Ctrl+C をキー入力として受け取り、記憶をまとめてから自分で部品を止める
     $ctrlC = $false
     try { [Console]::TreatControlCAsInput = $true; $ctrlC = $true } catch {}
     try {
-        while (Test-Port $Ports.Olv) {
+        while ((Test-Port $Ports.Olv) -and -not ($app -and $app.HasExited)) {
             if ($ctrlC -and [Console]::KeyAvailable) {
                 $k = [Console]::ReadKey($true)
                 if ($k.Key -eq [ConsoleKey]::C -and ($k.Modifiers -band [ConsoleModifiers]::Control)) { break }
             }
             Start-Sleep -Milliseconds 300
         }
-        if (-not (Test-Port $Ports.Olv)) { Say "Open-LLM-VTuber が終了しました。" Yellow }
+        if ($app -and $app.HasExited) { Say "アプリを終了しました。" Gray }
+        elseif (-not (Test-Port $Ports.Olv)) { Say "Open-LLM-VTuber が終了しました。" Yellow }
     } finally {
         if ($ctrlC) { try { [Console]::TreatControlCAsInput = $false } catch {} }   # まとめの途中でもう一度 Ctrl+C なら全部止まる
         Save-Memory

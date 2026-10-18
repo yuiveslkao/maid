@@ -53,6 +53,16 @@ FRONTEND_JS = """// maid が起動のたびに書き換えるファイル（scri
 }})();
 // 3D モデル（maid.settings.json の vrm。null なら Live2D のまま）
 window.MAID_VRM = {vrm};
+// デスクトップのキャラ（maid のアプリ）を使うか。使うときは、キャラの声はキャラのウィンドウで鳴らすので、ここでは消音する
+window.MAID_DESKTOP = {desktop};
+window.MAID_GATE = {gate};
+if (window.MAID_DESKTOP && !window.MAID_CHARACTER_PAGE) {{
+  var maidPlay = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function () {{
+    if (typeof this.src === "string" && this.src.indexOf("data:audio") === 0) this.muted = true;
+    return maidPlay.apply(this, arguments);
+  }};
+}}
 """
 
 # 3D 表示（frontend/maid-vrm.js）が使うライブラリ。npm の配布物（.tgz）から必要なファイルだけを取り出す
@@ -147,12 +157,27 @@ def _setup_vrm(front: Path, vrm: Path | None, view: str, changed: list[str]) -> 
     if _write_if_changed(folder / "maid-vrm.js", js):
         changed.append("maid-vrm.js")
     # ?v= はファイルが変わったときだけ変わる（Edge に古いファイルを使い回させず、同じなら読み込みを速くする）
-    return {"url": f"./{VRM_DIR}/model.vrm?v={st.st_size}-{int(st.st_mtime)}", "view": view,
+    # / から始める（画面の本体と、デスクトップのキャラの画面 /maid-vrm/character.html の両方から同じ場所を指すように）
+    return {"url": f"/{VRM_DIR}/model.vrm?v={st.st_size}-{int(st.st_mtime)}", "view": view,
             "script": f"./{VRM_DIR}/maid-vrm.js?v={_short_hash(js.encode())}"}
 
 
+def _write_character_page(front: Path, defaults_js: str, vrm_cfg: dict, changed: list[str]) -> None:
+    """デスクトップのキャラのウィンドウの画面（frontend/maid-vrm/character.html）を置く。"""
+    folder = front / VRM_DIR
+    char_js = (ROOT / "frontend" / "character.js").read_text(encoding="utf-8")
+    if _write_if_changed(folder / "character.js", char_js):
+        changed.append("character.js")
+    html = (ROOT / "frontend" / "character.html").read_text(encoding="utf-8")
+    for key, value in (("{defaults_v}", _short_hash(defaults_js.encode())), ("{importmap}", json.dumps(IMPORT_MAP).replace("./", "../")),
+                       ("{vrm_v}", vrm_cfg["script"].rsplit("=", 1)[-1]), ("{char_v}", _short_hash(char_js.encode()))):
+        html = html.replace(key, value)
+    if _write_if_changed(folder / "character.html", html):
+        changed.append("character.html")
+
+
 def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int,
-                   vrm: Path | None = None, vrm_view: str = "bust", mic: bool = True) -> list[str]:
+                   vrm: Path | None = None, vrm_view: str = "bust", mic: bool = True, desktop: bool = False) -> list[str]:
     """変更したファイル名の一覧を返す。"""
     index = front / "index.html"
     if not index.exists():
@@ -166,6 +191,8 @@ def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int,
     frames = max(3, round(silence_ms / VAD_FRAME_MS))
     js = FRONTEND_JS.format(ws_url=json.dumps(ws_url), base_url=json.dumps(base_url), redemption_frames=frames,
                             mic="true" if mic else "false",
+                            desktop="true" if desktop and vrm_cfg else "false",
+                            gate=json.dumps(ws_url.rsplit("/", 1)[0]),
                             vrm=json.dumps(vrm_cfg and {"url": vrm_cfg["url"], "view": vrm_cfg["view"]}))
     if _write_if_changed(front / "maid-defaults.js", js):
         changed.append("maid-defaults.js")
@@ -178,7 +205,10 @@ def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int,
         new_html = html.replace("<head>", f"<head>\n    {defaults_tag}", 1)
     # 3D 表示の読み込み。import map は画面の本体（module）より前に置く必要がある
     new_html = VRM_BLOCK_RE.sub("", new_html)
-    if vrm_cfg:
+    if vrm_cfg and desktop:
+        # キャラはデスクトップのウィンドウに出すので、この画面には出さない（GPU の節約）
+        _write_character_page(front, js, vrm_cfg, changed)
+    elif vrm_cfg:
         block = ("\n    <!-- maid-vrm -->\n"
                  f'    <script type="importmap">{json.dumps(IMPORT_MAP)}</script>\n'
                  f'    <script type="module" src="{vrm_cfg["script"]}"></script>\n'
@@ -310,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--vrm", default="", help="3D モデル (.vrm) のパス。空なら Live2D のまま")
     f.add_argument("--vrm-view", choices=("bust", "full"), default="bust", help="bust = 胸から上 / full = 全身")
     f.add_argument("--mic", choices=("on", "off"), default="on", help="off = マイクを使わない（キーボードだけ）")
+    f.add_argument("--desktop", choices=("on", "off"), default="off", help="on = キャラをデスクトップのウィンドウに出す（maid のアプリ）")
     f.add_argument("--template", default=str(Path(__file__).resolve().parent.parent / "config" / "open-llm-vtuber" / "conf.yaml"))
     v = sub.add_parser("extract-vrm-libs")
     v.add_argument("three")
@@ -323,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     olv = Path(args.olv)
     if args.cmd == "prepare":
         changed = patch_frontend(olv / "frontend", args.ws_url, args.base_url, args.silence_ms,
-                                 Path(args.vrm) if args.vrm else None, args.vrm_view, args.mic == "on")
+                                 Path(args.vrm) if args.vrm else None, args.vrm_view, args.mic == "on", args.desktop == "on")
         if changed:
             print("画面の設定を更新しました: " + ", ".join(changed))
         result = patch_conf(olv / "conf.yaml", Path(args.template))

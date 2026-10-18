@@ -100,8 +100,20 @@ class FrontendTest(unittest.TestCase):
         self.assertEqual(html.count("<!-- maid-vrm -->"), 1)
         js = (self.front / "maid-defaults.js").read_text(encoding="utf-8")
         self.assertIn('"view": "full"', js)
-        self.assertIn("./maid-vrm/model.vrm?v=", js)
+        self.assertIn("/maid-vrm/model.vrm?v=", js)
         self.assertEqual((self.front / "maid-vrm" / "model.vrm").read_bytes(), vrm.read_bytes())
+
+        # デスクトップのキャラを使うときは、画面の本体には出さず、キャラの画面を置く
+        olv_patch.patch_frontend(self.front, "ws://127.0.0.1:12394/client-ws", "http://b", 900, vrm, desktop=True)
+        html = (self.front / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("maid-vrm", html)
+        page = (self.front / "maid-vrm" / "character.html").read_text(encoding="utf-8")
+        self.assertIn('"three": "../maid-vrm/lib/three.module.js"', page)
+        for key in ("{defaults_v}", "{importmap}", "{vrm_v}", "{char_v}"):
+            self.assertNotIn(key, page)
+        js = (self.front / "maid-defaults.js").read_text(encoding="utf-8")
+        self.assertIn("window.MAID_DESKTOP = true;", js)
+        self.assertIn('window.MAID_GATE = "ws://127.0.0.1:12394";', js)
 
         # 使わなくしたら片付ける
         olv_patch.patch_frontend(self.front, "ws://a", "http://b", 900, None)

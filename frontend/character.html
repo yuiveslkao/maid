@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <!-- maid: デスクトップのキャラのウィンドウ（app/maid_app.py が開く）。scripts/olv_patch.py が {…} を埋めて置く -->
+    <script>window.MAID_CHARACTER_PAGE = true;</script>
+    <script src="../maid-defaults.js?v={defaults_v}"></script>
+    <script type="importmap">{importmap}</script>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+      #live2d-internal-wrapper { position: relative; width: 100%; height: 100%; }
+      #canvas { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="live2d-internal-wrapper"><canvas id="canvas"></canvas></div>
+    <script type="module" src="./maid-vrm.js?v={vrm_v}"></script>
+    <script src="./character.js?v={char_v}"></script>
+  </body>
+</html>

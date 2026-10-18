@@ -205,5 +205,37 @@ class ProactiveTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.received, ["text-input"])  # Discord 通話中
 
 
+@unittest.skipIf(connect is None, "websockets なし")
+class ObserverTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import discord_gate
+
+        async def backend(ws):
+            async for msg in ws:
+                if json.loads(msg)["type"] == "text-input":
+                    await ws.send(json.dumps({"type": "audio", "audio": "UklGRg==", "display_text": {"text": "うん"}}))
+                    await ws.send(json.dumps({"type": "full-text", "text": "Thinking..."}))
+
+        self.backend = await serve(backend, "127.0.0.1", 0)
+        port = self.backend.sockets[0].getsockname()[1]
+        self.gate = discord_gate.Gate(f"ws://127.0.0.1:{port}", lambda: False, poll_seconds=0.02)
+        self.gate_server = await serve(self.gate.handle, "127.0.0.1", 0)
+        self.gate_port = self.gate_server.sockets[0].getsockname()[1]
+
+    async def asyncTearDown(self):
+        self.gate_server.close()
+        self.backend.close()
+
+    async def test_character_window_gets_voice_and_interrupts(self):
+        async with connect(f"ws://127.0.0.1:{self.gate_port}/maid-observer") as obs, \
+                connect(f"ws://127.0.0.1:{self.gate_port}/client-ws") as ws:
+            await asyncio.sleep(0.05)
+            await ws.send(json.dumps({"type": "text-input", "text": "やあ"}))
+            self.assertEqual(json.loads(await ws.recv())["type"], "audio")   # 画面にもそのまま届く
+            self.assertEqual(json.loads(await asyncio.wait_for(obs.recv(), 1))["type"], "audio")  # キャラにも写し
+            await ws.send(json.dumps({"type": "interrupt-signal", "text": ""}))
+            self.assertEqual(json.loads(await asyncio.wait_for(obs.recv(), 1)), {"type": "maid-interrupt"})
+
+
 if __name__ == "__main__":
     unittest.main()

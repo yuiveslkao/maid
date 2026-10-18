@@ -14,6 +14,9 @@ Discord の通話判定には、Windows がアプリごとのマイク使用状�
 --proactive-minutes を付けると、しばらく会話が無いときに本体へ「話しかけて」の合図（ai-speak-signal）を送る。
 送るのは、相手が PC を使っていて（キーボードかマウスを最近触った）、Discord で通話していないときだけ。
 話題は頭脳の中継が記憶から選ぶ。
+
+/maid-observer につないだもの（デスクトップのキャラのウィンドウ）には、キャラの声（audio）と、
+相手が割り込んだ合図（{"type": "maid-interrupt"}）の写しを送る。キャラのウィンドウはそれで声を出し、口を動かす。
 """
 
 from __future__ import annotations
@@ -92,6 +95,7 @@ class Gate:
         self.in_call = False
         self.clients: set[ServerConnection] = set()
         self.backends: dict[ServerConnection, object] = {}
+        self.observers: set[ServerConnection] = set()  # デスクトップのキャラのウィンドウ
         # キャラから話しかける: 最後の会話から proactive_seconds たったら。PC から away_seconds 離れていたら話しかけない
         self.proactive_seconds = proactive_seconds
         self.away_seconds = away_seconds
@@ -146,8 +150,25 @@ class Gate:
                 await self.speak()
             await asyncio.sleep(self.poll_seconds)
 
+    async def observe(self, observer: ServerConnection) -> None:
+        self.observers.add(observer)
+        log.info("キャラのウィンドウがつながりました")
+        try:
+            await observer.wait_closed()
+        finally:
+            self.observers.discard(observer)
+
+    async def tell_observers(self, msg: str) -> None:
+        for ws in list(self.observers):
+            try:
+                await ws.send(msg)
+            except ConnectionClosed:
+                self.observers.discard(ws)
+
     async def handle(self, client: ServerConnection) -> None:
         path = client.request.path if client.request else "/client-ws"
+        if path.startswith("/maid-observer"):
+            return await self.observe(client)
         self.clients.add(client)
         try:
             async with connect(self.backend_url.rstrip("/") + path, max_size=None) as backend:
@@ -164,6 +185,7 @@ class Gate:
             async for msg in backend:
                 if isinstance(msg, str) and msg.startswith('{"type": "audio"'):
                     self.touch()  # キャラが話している間も「会話中」
+                    await self.tell_observers(msg)
                 await client.send(msg)
         finally:
             await client.close()
@@ -197,6 +219,8 @@ class Gate:
                     continue
                 if msg_type in ("mic-audio-end", "text-input"):
                     self.touch()  # 相手が話した
+                if msg_type == "interrupt-signal":
+                    await self.tell_observers(json.dumps({"type": "maid-interrupt"}))
 
                 await backend.send(raw)
         finally:
