@@ -222,8 +222,7 @@ function Start-Parts {
     Start-OllamaServer
     # 頭脳の中継は起動するとすぐモデルを GPU に読み込ませる（Open-LLM-VTuber の起動と並行して進む）
     Start-PyPart "brain-proxy" "$Svc\llm_proxy.py" @("--port", "$($Ports.BrainProxy)", "--ollama", "http://127.0.0.1:$($Ports.Ollama)",
-        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"", "--data", "`"$DataDir`"", "--embed-model=$EmbedModel",
-        "--image-dir", "`"$($P.Logs)\images`"")
+        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"", "--data", "`"$DataDir`"", "--embed-model=$EmbedModel")
     if (-not (Test-Port $Ports.Aivis)) {
         $exe = Find-AivisExe
         if (-not $exe) { throw "AivisSpeech Engine がありません。先に setup.bat を実行してください。" }

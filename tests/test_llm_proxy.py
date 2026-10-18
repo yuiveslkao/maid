@@ -166,23 +166,6 @@ class ProxyTest(unittest.TestCase):
         finally:
             proxy.shutdown()
 
-    def test_saves_images_for_checking(self):
-        import base64
-        import tempfile
-
-        # JPEG（APP0 のあとに SOF0）と PNG の頭だけ
-        jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" \
-               b"\xff\xc0\x00\x11\x08\x02\x60\x04\x38\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
-        png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x05\x00\x00\x00\x02\xd0"
-        self.assertEqual(llm_proxy.image_size(jpeg), (1080, 608))
-        self.assertEqual(llm_proxy.image_size(png), (1280, 720))
-        msg = {"role": "user", "content": [
-            {"type": "text", "text": "見える？"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}}]}
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(llm_proxy.save_images(Path(d), msg), ["1080x608"])
-            self.assertEqual(len(list(Path(d).glob("*.jpg"))), 1)
-
     def test_preload(self):
         llm_proxy.preload(f"http://127.0.0.1:{self.ollama.server_port}", "gemma")
         self.assertEqual(FakeOllama.requests, [("/api/generate", {"model": "gemma", "keep_alive": -1})])
