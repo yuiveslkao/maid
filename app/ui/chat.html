@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>maid</title>
+<!-- maid: チャットだけの版の画面（app/maid_app.py chat が開く）。頭脳とのやりとりは app/chat.py が行う -->
+<style>
+  :root {
+    --bg: #fff7fa; --panel: #ffffff; --line: #f3d3df; --accent: #f27aa6; --accent-dark: #d95a8a;
+    --me: #ffe3ee; --her: #ffffff; --text: #3b2a33; --sub: #9a7f8b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Yu Gothic UI", "Meiryo UI", system-ui, sans-serif; font-size: 15px; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--panel);
+    border-bottom: 1px solid var(--line); }
+  header .name { font-weight: bold; font-size: 16px; flex: 1; }
+  header button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 999px;
+    padding: 5px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+  header button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .icon { width: 40px; height: 40px; border-radius: 50%; flex: none; object-fit: cover; background: var(--line);
+    display: flex; align-items: center; justify-content: center; color: #fff; font-weight: bold; }
+  #log { flex: 1; overflow-y: auto; padding: 16px 14px; display: flex; flex-direction: column; gap: 12px; }
+  .row { display: flex; gap: 8px; align-items: flex-end; max-width: 100%; }
+  .row.me { flex-direction: row-reverse; }
+  .bubble { padding: 9px 13px; border-radius: 16px; background: var(--her); border: 1px solid var(--line);
+    white-space: pre-wrap; word-break: break-word; max-width: min(560px, 75%); line-height: 1.6; }
+  .row.me .bubble { background: var(--me); border-color: var(--me); }
+  .bubble.thinking::after { content: "…"; color: var(--sub); }
+  .sources { display: block; margin-top: 6px; font-size: 12px; color: var(--sub); }
+  .sources a { color: var(--accent-dark); margin-right: 8px; cursor: pointer; text-decoration: underline; }
+  footer { display: flex; gap: 8px; padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--line); }
+  textarea { flex: 1; resize: none; height: 44px; max-height: 140px; padding: 10px 12px; border-radius: 12px;
+    border: 1px solid var(--line); font: inherit; color: var(--text); background: var(--bg); outline: none; }
+  textarea:focus { border-color: var(--accent); }
+  footer button { border: none; background: var(--accent); color: #fff; border-radius: 12px; padding: 0 18px;
+    font: inherit; font-weight: bold; cursor: pointer; }
+  footer button.stop { background: var(--sub); }
+  .empty { color: var(--sub); text-align: center; margin-top: 30px; }
+</style>
+</head>
+<body>
+<header>
+  <div id="charIcon" class="icon"></div>
+  <div class="name" id="charName"></div>
+  <button id="voiceBtn" title="声で返事する">声</button>
+  <button id="clearBtn" title="画面の会話を消す（覚えたことは消えません）">会話を消す</button>
+</header>
+<div id="log"></div>
+<footer>
+  <textarea id="input" placeholder="メッセージ（Enter で送る / Shift+Enter で改行）"></textarea>
+  <button id="sendBtn">送る</button>
+</footer>
+<script>
+(function () {
+  var log = document.getElementById("log"), input = document.getElementById("input");
+  var sendBtn = document.getElementById("sendBtn"), voiceBtn = document.getElementById("voiceBtn");
+  var info = { name: "", human: "", icons: {} }, voice = false, current = null, currentText = "", busy = false;
+  var audioQueue = [], playing = null;
+
+  function iconEl(kind) {
+    var src = info.icons[kind];
+    var el = document.createElement(src ? "img" : "div");
+    el.className = "icon";
+    if (src) el.src = src;
+    else { el.textContent = ((kind === "character" ? info.name : info.human) || "?").slice(0, 1);
+           el.style.background = kind === "character" ? "#f27aa6" : "#b9a2ad"; }
+    return el;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; });
+  }
+
+  // 返事の中の <think>出典: URL / URL。</think> は、小さなリンクとして出す
+  function render(el, text) {
+    var sources = [];
+    var body = text.replace(/<think>([\s\S]*?)(<\/think>|$)/g, function (_, inner) {
+      (inner.match(/https?:\/\/[^\s/]+[^\s。]*/g) || []).forEach(function (u) { sources.push(u.replace(/[。、]+$/, "")); });
+      return "";
+    });
+    var html = escapeHtml(body.trim());
+    if (sources.length) {
+      html += '<span class="sources">出典: ' + sources.map(function (u) {
+        return '<a data-url="' + escapeHtml(u) + '">' + escapeHtml(u.replace(/^https?:\/\//, "").split("/")[0]) + "</a>";
+      }).join("") + "</span>";
+    }
+    el.innerHTML = html;
+  }
+
+  function addRow(kind, text) {
+    var empty = log.querySelector(".empty");
+    if (empty) empty.remove();
+    var row = document.createElement("div");
+    row.className = "row" + (kind === "user" ? " me" : "");
+    row.appendChild(iconEl(kind === "user" ? "user" : "character"));
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+    render(bubble, text || "");
+    row.appendChild(bubble);
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return bubble;
+  }
+
+  function setBusy(b) {
+    busy = b;
+    sendBtn.textContent = b ? "止める" : "送る";
+    sendBtn.className = b ? "stop" : "";
+  }
+
+  function startReply() {
+    current = addRow("character", "");
+    current.classList.add("thinking");
+    currentText = "";
+    setBusy(true);
+  }
+
+  function stopAudio() {
+    audioQueue.length = 0;
+    if (playing) { playing.pause(); playing = null; }
+  }
+
+  function playNext() {
+    if (playing || !audioQueue.length) return;
+    var a = new Audio("data:audio/wav;base64," + audioQueue.shift());
+    playing = a;
+    var done = function () { if (playing === a) playing = null; playNext(); };
+    a.onended = done; a.onerror = done;
+    a.play().catch(done);
+  }
+
+  // Python（app/maid_app.py）から呼ばれる
+  window.maid = {
+    proactive: function () { if (!busy) startReply(); },
+    chunk: function (t) {
+      if (!current) startReply();
+      currentText += t;
+      render(current, currentText);
+      log.scrollTop = log.scrollHeight;
+    },
+    done: function () {
+      if (current) { current.classList.remove("thinking"); if (!currentText) render(current, "（返事がありませんでした）"); }
+      current = null;
+      setBusy(false);
+    },
+    audio: function (b64) { audioQueue.push(b64); playNext(); }
+  };
+
+  function send() {
+    if (busy) {  // 止める
+      stopAudio();
+      window.pywebview.api.stop();
+      return;
+    }
+    var text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    stopAudio();
+    addRow("user", text);
+    startReply();
+    window.pywebview.api.send(text);
+  }
+
+  sendBtn.onclick = send;
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  voiceBtn.onclick = function () {
+    voice = !voice;
+    voiceBtn.className = voice ? "on" : "";
+    if (!voice) stopAudio();
+    window.pywebview.api.set_voice(voice);
+  };
+  document.getElementById("clearBtn").onclick = function () {
+    if (!confirm("画面の会話を消しますか？（覚えたことは消えません）")) return;
+    window.pywebview.api.clear();
+    log.innerHTML = '<div class="empty">話しかけてみてね</div>';
+  };
+  log.addEventListener("click", function (e) {
+    var url = e.target.getAttribute && e.target.getAttribute("data-url");
+    if (url) window.pywebview.api.open_url(url);
+  });
+
+  window.addEventListener("pywebviewready", function () {
+    window.pywebview.api.init().then(function (r) {
+      info = r;
+      document.title = r.name;
+      document.getElementById("charName").textContent = r.name;
+      var head = document.getElementById("charIcon");
+      head.replaceWith(Object.assign(iconEl("character"), { id: "charIcon" }));
+      voice = r.voice;
+      voiceBtn.className = voice ? "on" : "";
+      voiceBtn.style.display = r.voiceAvailable ? "" : "none";
+      if (!r.history.length) log.innerHTML = '<div class="empty">話しかけてみてね</div>';
+      r.history.forEach(function (m) { addRow(m.role === "user" ? "user" : "character", m.content); });
+      input.focus();
+    });
+  });
+})();
+</script>
+</body>
+</html>

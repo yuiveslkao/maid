@@ -29,6 +29,7 @@ import sys
 import time
 from typing import Callable
 
+from winutil import seconds_since_input
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
@@ -68,21 +69,6 @@ def discord_using_mic() -> bool:
                 continue
             if stop == 0 and start != 0:  # 使用開始していて、まだ終わっていない
                 return True
-
-
-def seconds_since_input() -> float:
-    """キーボードかマウスを最後に触ってからの秒数。Windows 以外は 0（いつも使っている扱い）。"""
-    if sys.platform != "win32":
-        return 0.0
-    import ctypes
-
-    class LASTINPUTINFO(ctypes.Structure):
-        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
-
-    info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
-    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
-        return 0.0
-    return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
 
 
 class Gate:

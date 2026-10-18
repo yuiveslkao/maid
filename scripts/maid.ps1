@@ -4,7 +4,9 @@
 #   片付けるときは maid フォルダを消せばよい（例外は docs\SETUP_WINDOWS.md の「片付け方」を参照）。
 #
 #   maid.bat setup            必要なものを runtime\ にダウンロードする（何度実行してもよい）
-#   maid.bat start            起動する（start.bat と同じ）
+#   maid.bat launch           起動の画面を出す（start.bat と同じ。どれで起動するか・使うものを選ぶ）
+#   maid.bat start            フル版で起動する（声で会話・デスクトップの 3D キャラ）
+#   maid.bat chat             チャットだけの版で起動する（軽い。Open-LLM-VTuber を使わない）
 #   maid.bat stop             裏に残っている maid の部品を全部止める
 #   maid.bat doctor           起動中に、返事が来ない・声が出ないなどの原因を調べる
 #   maid.bat logs <名前>      裏の部品のログを別ウィンドウで見る（ollama / brain-proxy / tts-bridge など）
@@ -58,7 +60,7 @@ $ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"   # 音声認�
 # 3D 表示に使うライブラリ（npm の配布物から必要なファイルだけ取り出す）
 $VrmLibs = @{ "three" = "https://registry.npmjs.org/three/-/three-0.185.1.tgz"; "three-vrm" = "https://registry.npmjs.org/@pixiv/three-vrm/-/three-vrm-3.5.5.tgz" }
 # maid の部品が使うライブラリ（検索・本文の抜き出し・PDF・Discord ゲート）
-$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13", "pywebview", "pystray", "pillow")  # 後ろ 3 つは maid のアプリ（WebView2・タスクトレイ）
+$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13", "pywebview", "pystray", "pillow", "pyyaml")  # pywebview 以降は maid のアプリ（WebView2・タスクトレイ・キャラの設定を読む）
 
 # ------------------------------------------------------------------ 設定（maid.settings.json）
 # 無ければ config\maid.settings.default.json をコピーして作る。書かれていない項目は既定値を使う
@@ -83,6 +85,8 @@ $Vrm = [string](Get-Setting "vrm")                     # 3D モデル (.vrm) の
 # 「models/xxx.vrm」のような書き方は maid フォルダからの場所とみなす
 if ($Vrm -and -not [IO.Path]::IsPathRooted($Vrm)) { $Vrm = Join-Path $Root $Vrm }
 $VrmView = [string](Get-Setting "vrm_view")            # auto / bust（胸から上）/ full（全身）
+$UseMemory = [bool](Get-Setting "memory")              # 覚える（会話から、あなたのことや今のことを覚える）
+$VoiceReply = [bool](Get-Setting "voice_reply")        # チャットだけの版で、声で返事する
 $UseApp = [bool](Get-Setting "app")                     # maid のアプリ（タスクトレイ・デスクトップのキャラ・チャットのウィンドウ）。false なら Edge で開く
 $CharacterOnTop = [bool](Get-Setting "character_on_top")              # デスクトップのキャラをいつも手前に出す
 $CharacterClickThrough = [bool](Get-Setting "character_click_through")  # デスクトップのキャラのクリックをすり抜けさせる
@@ -224,11 +228,17 @@ function Start-OllamaServer {
     Start-Part "ollama" $P.Ollama @("serve")
 }
 
-function Start-Parts {
+# 頭脳（Ollama と頭脳の中継）。頭脳の中継は起動するとすぐモデルを GPU に読み込ませる
+function Start-Brain {
     Start-OllamaServer
-    # 頭脳の中継は起動するとすぐモデルを GPU に読み込ませる（Open-LLM-VTuber の起動と並行して進む）
-    Start-PyPart "brain-proxy" "$Svc\llm_proxy.py" @("--port", "$($Ports.BrainProxy)", "--ollama", "http://127.0.0.1:$($Ports.Ollama)",
-        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"", "--data", "`"$DataDir`"", "--embed-model=$EmbedModel")
+    $a = @("--port", "$($Ports.BrainProxy)", "--ollama", "http://127.0.0.1:$($Ports.Ollama)",
+        "--model", "`"$Model`"", "--search", $Search, "--search-filler", "`"$SearchFiller`"", "--embed-model=$EmbedModel")
+    if ($UseMemory) { $a += @("--data", "`"$DataDir`"") }
+    Start-PyPart "brain-proxy" "$Svc\llm_proxy.py" $a
+}
+
+# 声（AivisSpeech と声の中継）
+function Start-Voice {
     if (-not (Test-Port $Ports.Aivis)) {
         $exe = Find-AivisExe
         if (-not $exe) { throw "AivisSpeech Engine がありません。先に setup.bat を実行してください。" }
@@ -236,17 +246,50 @@ function Start-Parts {
         Start-Part "aivisspeech" $exe @("--port", "$($Ports.Aivis)")
     }
     Start-PyPart "tts-bridge" "$Svc\tts_bridge.py" @("--port", "$($Ports.TtsBridge)", "--aivis-url", "http://127.0.0.1:$($Ports.Aivis)", "--voice", "`"$Voice`"", "--speed", "$Speed")
+}
+
+function Start-Parts {
+    Start-Brain
+    Start-Voice
     Start-PyPart "discord-gate" "$Svc\discord_gate.py" @("--port", "$($Ports.Gate)", "--backend", "ws://127.0.0.1:$($Ports.Olv)",
         "--proactive-minutes", "$ProactiveMinutes")
 }
 
 # 起動を待つ。どれかが起動しなければ、見るべきログの名前を出して止める
-function Wait-Parts {
-    foreach ($w in @(@("Ollama", $Ports.Ollama, 60, "ollama"), @("頭脳の中継", $Ports.BrainProxy, 60, "brain-proxy"),
-                     @("AivisSpeech Engine（初回は数分かかります）", $Ports.Aivis, 900, "aivisspeech"),
-                     @("声の中継", $Ports.TtsBridge, 60, "tts-bridge"),
-                     @("Open-LLM-VTuber（初回は数分かかります）", $Ports.Olv, 1200, "open-llm-vtuber"))) {
-        if (-not (Wait-Port $w[1] $w[2] $w[0])) { throw "$($w[0]) が起動しませんでした（.\maid.bat logs $($w[3])）。" }
+$PartWaits = @{
+    brain = @(@("Ollama", $Ports.Ollama, 60, "ollama"), @("頭脳の中継", $Ports.BrainProxy, 60, "brain-proxy"))
+    voice = @(@("AivisSpeech Engine（初回は数分かかります）", $Ports.Aivis, 900, "aivisspeech"), @("声の中継", $Ports.TtsBridge, 60, "tts-bridge"))
+    olv   = @(,@("Open-LLM-VTuber（初回は数分かかります）", $Ports.Olv, 1200, "open-llm-vtuber"))
+}
+function Wait-Parts([string[]]$Groups = @("brain", "voice", "olv")) {
+    foreach ($g in $Groups) {
+        foreach ($w in $PartWaits[$g]) {
+            if (-not (Wait-Port $w[1] $w[2] $w[0])) { throw "$($w[0]) が起動しませんでした（.\maid.bat logs $($w[3])）。" }
+        }
+    }
+}
+
+# 終わるまで待つ（アプリを閉じる・Open-LLM-VTuber が止まる・Ctrl+C）。終わったら記憶をまとめて全部止める。
+# Ctrl+C はこのウィンドウの部品全部に届いてしまう（頭脳が先に止まって記憶をまとめられない）。
+# なので待っている間は Ctrl+C をキー入力として受け取り、記憶をまとめてから自分で部品を止める
+function Wait-Quit($App, [bool]$WatchOlv) {
+    $ctrlC = $false
+    try { [Console]::TreatControlCAsInput = $true; $ctrlC = $true } catch {}
+    try {
+        while (-not ($App -and $App.HasExited) -and -not ($WatchOlv -and -not (Test-Port $Ports.Olv))) {
+            if ($ctrlC -and [Console]::KeyAvailable) {
+                $k = [Console]::ReadKey($true)
+                if ($k.Key -eq [ConsoleKey]::C -and ($k.Modifiers -band [ConsoleModifiers]::Control)) { break }
+            }
+            Start-Sleep -Milliseconds 300
+        }
+        if ($App -and $App.HasExited) { Say "アプリを終了しました。" Gray }
+        elseif ($WatchOlv -and -not (Test-Port $Ports.Olv)) { Say "Open-LLM-VTuber が終了しました。" Yellow }
+    } finally {
+        if ($ctrlC) { try { [Console]::TreatControlCAsInput = $false } catch {} }   # まとめの途中でもう一度 Ctrl+C なら全部止まる
+        Save-Memory
+        $n = Stop-Maid
+        Say "止めました ($n 個)" Gray
     }
 }
 
@@ -383,7 +426,7 @@ function Invoke-Start {
     $app = $null
     if ($UseApp) {
         # maid のアプリ（WebView2。Windows に標準）。画面の設定やマイクの許可は runtime\webview に保存する
-        $a = @("`"$Root\app\maid_app.py`"", "--chat-url", "$OlvUrl/?t=$t", "--storage", "`"$Rt\webview`"")
+        $a = @("`"$Root\app\maid_app.py`"", "full", "--chat-url", "$OlvUrl/?t=$t", "--storage", "`"$Rt\webview`"")
         if ($Desktop) { $a += @("--character-url", "$OlvUrl/maid-vrm/character.html?t=$t") }
         if ($CharacterOnTop) { $a += "--on-top" }
         if (-not $CharacterClickThrough) { $a += "--no-click-through" }
@@ -396,26 +439,36 @@ function Invoke-Start {
         Say "`n準備完了。画面を閉じても裏の部品は動き続けます。ログ: .\maid.bat logs <名前>" Green
         Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
     }
-    # Ctrl+C はこのウィンドウの部品全部に届いてしまう（頭脳が先に止まって記憶をまとめられない）。
-    # なので待っている間は Ctrl+C をキー入力として受け取り、記憶をまとめてから自分で部品を止める
-    $ctrlC = $false
-    try { [Console]::TreatControlCAsInput = $true; $ctrlC = $true } catch {}
-    try {
-        while ((Test-Port $Ports.Olv) -and -not ($app -and $app.HasExited)) {
-            if ($ctrlC -and [Console]::KeyAvailable) {
-                $k = [Console]::ReadKey($true)
-                if ($k.Key -eq [ConsoleKey]::C -and ($k.Modifiers -band [ConsoleModifiers]::Control)) { break }
-            }
-            Start-Sleep -Milliseconds 300
-        }
-        if ($app -and $app.HasExited) { Say "アプリを終了しました。" Gray }
-        elseif (-not (Test-Port $Ports.Olv)) { Say "Open-LLM-VTuber が終了しました。" Yellow }
-    } finally {
-        if ($ctrlC) { try { [Console]::TreatControlCAsInput = $false } catch {} }   # まとめの途中でもう一度 Ctrl+C なら全部止まる
-        Save-Memory
-        $n = Stop-Maid
-        Say "止めました ($n 個)" Gray
-    }
+    Wait-Quit $app $true
+}
+
+# ------------------------------------------------------------------ chat（チャットだけの版）
+function Invoke-Chat {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Install-MaidVenv
+    Say "部品を起動しています（頭脳$(if ($VoiceReply) { '・声' })）" Cyan
+    Start-Brain
+    $groups = @("brain")
+    if ($VoiceReply) { Start-Voice; $groups += "voice" }
+    Wait-Parts $groups
+    $a = @("`"$Root\app\maid_app.py`"", "chat", "--storage", "`"$Rt\webview`"", "--data", "`"$DataDir`"",
+        "--conf", "`"$($P.Olv)\conf.yaml`"", "--proxy", "http://127.0.0.1:$($Ports.BrainProxy)", "--proactive-minutes", "$ProactiveMinutes")
+    if ($VoiceReply) { $a += @("--tts", "http://127.0.0.1:$($Ports.TtsBridge)", "--voice") }
+    $app = Start-Part "app" $P.MaidPy $a -PassThru
+    Say ("  頭脳: $Model / 検索: $Search / 声: $(if ($VoiceReply) { $Voice } else { 'なし' }) （起動 {0:N0} 秒）" -f $sw.Elapsed.TotalSeconds) Gray
+    Say "`n準備完了。チャットのウィンドウを閉じると、記憶をまとめて全部止まります（このウィンドウで Ctrl+C でも）。" Green
+    Wait-Quit $app $false
+}
+
+# ------------------------------------------------------------------ launch（起動の画面）
+function Invoke-Launch {
+    Install-MaidVenv
+    & $P.MaidPy "$Root\app\maid_app.py" launcher --storage "$Rt\webview" --data "$DataDir" --conf "$($P.Olv)\conf.yaml" | Out-Host
+    $code = $LASTEXITCODE
+    # 選んだ内容は maid.settings.json に書かれたので、このスクリプトを読み直して起動する
+    if ($code -eq 10) { & $PSCommandPath chat }
+    elseif ($code -eq 11) { & $PSCommandPath start }
+    else { Say "やめました" Gray }
 }
 
 # ------------------------------------------------------------------ doctor
@@ -548,12 +601,14 @@ function Invoke-Logs {
 # ------------------------------------------------------------------ コマンド
 switch ($Command) {
     "setup" { Invoke-Setup }
+    "launch" { Invoke-Launch }
     "start" { Invoke-Start }
+    "chat" { Invoke-Chat }
     "stop" { Save-Memory; Say "止めました ($(Stop-Maid) 個)" Green }
     "doctor" { Invoke-Doctor }
     "logs" { Invoke-Logs }
     "clean" { Invoke-Clean }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 5 -First 7 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 5 -First 9 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }

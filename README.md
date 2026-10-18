@@ -10,7 +10,7 @@ PC を汚さない構成です。インストーラーや PATH の変更は使�
 
 ```bat
 setup.bat          rem 必要なものを runtime\ にダウンロード
-start.bat          rem 起動
+start.bat          rem 起動の画面（チャットだけ / フル をえらぶ）
 ```
 
 ## 仕組み
@@ -36,7 +36,11 @@ Open-LLM-VTuber 本体は改造せず、前後に中継を挟んだり、設定�
 | `services/web_search.py` | Web 検索（DuckDuckGo）とページ本文（PDF も）の抜き出し。外に出るのは検索語と開いたページだけ |
 | `services/tts_bridge.py` | 声の中継。AivisSpeech を OpenAI 互換の TTS として見せる |
 | `services/discord_gate.py` | Discord ゲート。Discord で通話中は声を本体に渡さない |
-| `app/maid_app.py` | maid のアプリ。タスクトレイ・デスクトップのキャラ・チャットのウィンドウ（WebView2） |
+| `app/maid_app.py` | maid のアプリ（WebView2）。起動の画面・チャットだけの版・フル版（タスクトレイ・デスクトップのキャラ・チャットのウィンドウ） |
+| `app/chat.py` | チャットだけの版の中身。頭脳の中継に直接話しかけ、声で返事するときは文ごとに読ませる |
+| `app/common.py` | 設定（`maid.settings.json`）とアイコン（`data\icons\`）の読み書き |
+| `app/ui/` | 起動の画面（`launcher.html`）とチャットだけの版の画面（`chat.html`） |
+| `services/winutil.py` | Windows の小物（最後に PC を触ってからの秒数） |
 | `frontend/maid-vrm.js` | 3D モデル（VRM）を表示する（Open-LLM-VTuber の画面の中・デスクトップのキャラ） |
 | `frontend/character.html` / `character.js` | デスクトップのキャラの画面。Discord ゲートから届く声を鳴らす |
 | `config/maid.settings.default.json` | `maid.settings.json`（いつも使う設定）の既定値 |

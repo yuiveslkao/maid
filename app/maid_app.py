@@ -1,27 +1,40 @@
-"""maid のアプリ: タスクトレイのアイコン・デスクトップのキャラ・チャットのウィンドウ。
+"""maid のアプリ。画面は WebView2（Windows に標準で入っている Edge の部品）で表示する。
 
-画面は WebView2（Windows に標準で入っている Edge の部品）で表示する。今は中身を Open-LLM-VTuber の画面に頼っている
-（チャットのウィンドウ = Open-LLM-VTuber の画面。キャラのウィンドウ = frontend/maid-vrm/character.html）。
+    python app/maid_app.py launcher ...   起動の画面（どれで起動するか・使うもの・アイコンを選ぶ）
+    python app/maid_app.py chat ...       チャットだけの版（app/chat.py。Open-LLM-VTuber を使わない）
+    python app/maid_app.py full ...       フル版: タスクトレイ・デスクトップのキャラ・チャットのウィンドウ
 
+フル版:
 - キャラのウィンドウ: 枠なし・背景透明。ほかのウィンドウの後ろ（デスクトップの上）に置き、クリックは後ろへすり抜ける。
   キャラの声は Discord ゲートから写しを受け取って、このウィンドウで鳴らす（口の動きのため）。
-- チャットのウィンドウ: 閉じてもアプリは終わらない（タスクトレイから開き直せる）。
+- チャットのウィンドウ: 今は Open-LLM-VTuber の画面。閉じてもアプリは終わらない（タスクトレイから開き直せる）。
 - タスクトレイ: チャットを開く / キャラを出す・隠す / いつも手前に / 終了。終了すると maid 全体が止まる（start.bat が後片付けする）。
 
-    python app/maid_app.py --chat-url http://127.0.0.1:12393/ --character-url http://127.0.0.1:12393/maid-vrm/character.html
+起動の画面の終わり方（終了コード）: 0 = やめる / 10 = チャットだけ / 11 = フル
 """
 
 from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import logging
 import os
 import sys
 import threading
 import time
+import webbrowser
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
+from chat import ChatSession, Speaker, load_character, proactive_loop  # noqa: E402
+from common import ROOT, Icons, Settings  # noqa: E402
+from winutil import seconds_since_input  # noqa: E402
 
 log = logging.getLogger("maid_app")
+UI = Path(__file__).resolve().parent / "ui"
+EXIT_CHAT, EXIT_FULL = 10, 11
 
 # Win32
 GWL_EXSTYLE = -20
@@ -112,18 +125,7 @@ def tray_image():
     return img
 
 
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="maid のアプリ")
-    p.add_argument("--chat-url", required=True)
-    p.add_argument("--character-url", default="", help="空ならキャラのウィンドウを出さない")
-    p.add_argument("--storage", default=None, help="画面の設定やマイクの許可を保存するフォルダ")
-    p.add_argument("--width", type=int, default=420, help="キャラのウィンドウの幅")
-    p.add_argument("--height", type=int, default=720, help="キャラのウィンドウの高さ")
-    p.add_argument("--on-top", action="store_true", help="キャラをいつも手前に出す")
-    p.add_argument("--no-click-through", action="store_true", help="キャラのウィンドウでクリックをすり抜けさせない")
-    a = p.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-
+def run_full(a) -> int:
     # キャラのウィンドウは一度もクリックされないので、声を自動で鳴らせるようにする
     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--autoplay-policy=no-user-gesture-required"
     import pystray
@@ -182,6 +184,148 @@ def main(argv: list[str] | None = None) -> int:
     # 少し待ってから終わる（トレイのアイコンを消す時間）
     time.sleep(0.3)
     return 0
+
+
+def run_launcher(a) -> int:
+    import webview
+
+    settings, icons = Settings(), Icons(Path(a.data) / "icons")
+    character = load_character(Path(a.conf) if a.conf else None)
+    result = {"code": 0}
+    holder: dict = {}
+
+    class Api:
+        def load(self):
+            s = settings.all()
+            return {"mode": s.get("mode", "chat"), "voice_reply": bool(s.get("voice_reply")), "mic": bool(s.get("mic", True)),
+                    "search": s.get("search", "auto"), "memory": s.get("memory", True) is not False,
+                    "proactive_minutes": float(s.get("proactive_minutes") or 0), "vrm": s.get("vrm", ""),
+                    "name": character["name"], "icons": {k: icons.data_url(k) for k in ("character", "user")}}
+
+        def save_icon(self, kind, data_url):
+            return icons.save(kind, data_url)
+
+        def remove_icon(self, kind):
+            icons.remove(kind)
+
+        def pick_vrm(self):
+            dialog = getattr(getattr(webview, "FileDialog", None), "OPEN", None) or webview.OPEN_DIALOG
+            picked = holder["window"].create_file_dialog(dialog, file_types=("VRM (*.vrm)",))
+            if not picked:
+                return ""
+            path = Path(picked[0])
+            try:  # maid フォルダの中なら、maid フォルダからの場所で書く
+                return path.resolve().relative_to(ROOT).as_posix()
+            except ValueError:
+                return path.as_posix()
+
+        def launch(self, choice):
+            keys = ("mode", "voice_reply", "mic", "search", "memory", "proactive_minutes", "vrm")
+            settings.update({k: choice[k] for k in keys if k in choice})
+            result["code"] = EXIT_FULL if choice.get("mode") == "full" else EXIT_CHAT
+            holder["window"].destroy()
+
+        def quit(self):
+            holder["window"].destroy()
+
+    holder["window"] = webview.create_window(f"{character['name']} を起動", url=str(UI / "launcher.html"), js_api=Api(),
+                                             width=580, height=820)
+    webview.start(private_mode=False, storage_path=a.storage)
+    return result["code"]
+
+
+def run_chat(a) -> int:
+    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--autoplay-policy=no-user-gesture-required"  # キャラから話しかけた声も鳴らす
+    import webview
+
+    character = load_character(Path(a.conf) if a.conf else None)
+    icons = Icons(Path(a.data) / "icons")
+    session = ChatSession(a.proxy, character, Path(a.data) / "chat.json")
+    state = {"voice": bool(a.voice and a.tts)}
+    holder: dict = {}
+    stop = threading.Event()
+
+    def js(fn: str, *args) -> None:
+        window = holder.get("window")
+        if window:
+            window.evaluate_js(f"window.maid && maid.{fn}({','.join(json.dumps(x, ensure_ascii=False) for x in args)})")
+
+    speaker = Speaker(a.tts, lambda b64: js("audio", b64)) if a.tts else None
+
+    def reply(text: str, proactive: bool = False) -> None:
+        if speaker:
+            speaker.reset()
+        if proactive:
+            js("proactive")
+
+        def chunk(piece: str) -> None:
+            js("chunk", piece)
+            if speaker and state["voice"]:
+                speaker.feed(piece)
+
+        session.send(text, chunk, proactive=proactive)
+        if speaker and state["voice"]:
+            speaker.feed("", final=True)
+        js("done")
+
+    class Api:
+        def init(self):
+            return {"name": character["name"], "human": character["human"],
+                    "icons": {k: icons.data_url(k) for k in ("character", "user")},
+                    "history": session.history, "voice": state["voice"], "voiceAvailable": bool(a.tts)}
+
+        def send(self, text):
+            threading.Thread(target=reply, args=(str(text),), daemon=True).start()
+
+        def stop(self):
+            session.cancel.set()
+            if speaker:
+                speaker.reset()
+
+        def set_voice(self, on):
+            state["voice"] = bool(on and a.tts)
+            if speaker and not state["voice"]:
+                speaker.reset()
+
+        def open_url(self, url):
+            if str(url).startswith(("http://", "https://")):
+                webbrowser.open(url)
+
+        def clear(self):
+            session.clear()
+
+    threading.Thread(target=proactive_loop, args=(session, a.proactive_minutes, lambda: reply("", proactive=True),
+                                                  seconds_since_input, stop), daemon=True).start()
+    holder["window"] = webview.create_window(character["name"], url=str(UI / "chat.html"), js_api=Api(), width=760, height=860)
+    webview.start(private_mode=False, storage_path=a.storage)
+    stop.set()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="maid のアプリ")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--storage", default=None, help="画面の設定やマイクの許可を保存するフォルダ")
+    common.add_argument("--data", default=str(ROOT / "data"), help="アイコンや会話を置くフォルダ")
+    common.add_argument("--conf", default=str(ROOT / "runtime" / "Open-LLM-VTuber" / "conf.yaml"), help="キャラの設定")
+
+    sub.add_parser("launcher", parents=[common])
+    c = sub.add_parser("chat", parents=[common])
+    c.add_argument("--proxy", default="http://127.0.0.1:11434", help="頭脳の中継")
+    c.add_argument("--tts", default="", help="声の中継（空なら声で返事しない）")
+    c.add_argument("--voice", action="store_true", help="最初から声で返事する")
+    c.add_argument("--proactive-minutes", type=float, default=0, help="会話がこれだけ無かったらキャラから話しかける（0 で話しかけない）")
+    f = sub.add_parser("full", parents=[common])
+    f.add_argument("--chat-url", required=True)
+    f.add_argument("--character-url", default="", help="空ならキャラのウィンドウを出さない")
+    f.add_argument("--width", type=int, default=420, help="キャラのウィンドウの幅")
+    f.add_argument("--height", type=int, default=720, help="キャラのウィンドウの高さ")
+    f.add_argument("--on-top", action="store_true", help="キャラをいつも手前に出す")
+    f.add_argument("--no-click-through", action="store_true", help="キャラのウィンドウでクリックをすり抜けさせない")
+    a = p.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    return {"launcher": run_launcher, "chat": run_chat, "full": run_full}[a.cmd](a)
 
 
 if __name__ == "__main__":
