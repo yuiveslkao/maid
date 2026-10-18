@@ -267,8 +267,49 @@ def memory_worker(memory: Memory, stop: threading.Event, every: float = 60) -> N
             log.exception("記憶の整理でエラー")
 
 
+IMAGE_KEEP = 10  # 保存しておく画像の数
+
+
+def image_size(data: bytes) -> tuple[int, int] | None:
+    """JPEG / PNG の幅と高さ（ライブラリなしで読む）。"""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    i = 2
+    while data[:2] == b"\xff\xd8" and i + 9 < len(data):
+        if data[i] != 0xFF:
+            return None
+        marker, length = data[i + 1], int.from_bytes(data[i + 2:i + 4], "big")
+        if marker in (0xC0, 0xC1, 0xC2):
+            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i += 2 + length
+    return None
+
+
+def save_images(folder: Path, message: dict) -> list[str]:
+    """頭脳に送る画像を保存して、「幅x高さ」の一覧を返す（実際に何が見えているかを確かめるため）。"""
+    import base64
+
+    sizes = []
+    parts = message.get("content") if isinstance(message.get("content"), list) else []
+    for n, part in enumerate(p for p in parts if isinstance(p, dict) and p.get("type") == "image_url"):
+        url = (part.get("image_url") or {}).get("url", "")
+        head, _, b64 = url.partition(",")
+        try:
+            data = base64.b64decode(b64)
+        except ValueError:
+            continue
+        size = image_size(data)
+        sizes.append(f"{size[0]}x{size[1]}" if size else "?")
+        folder.mkdir(parents=True, exist_ok=True)
+        ext = "png" if "png" in head else "jpg"
+        (folder / f"{datetime.now():%Y%m%d-%H%M%S}-{n}.{ext}").write_bytes(data)
+    for old in sorted(folder.glob("*.*"))[:-IMAGE_KEEP] if sizes else []:
+        old.unlink()
+    return sizes
+
+
 def make_handler(upstream: str, model: str | None = None, search_mode: str = "off", search_filler: str = "",
-                 search_fn=None, read_fn=None, memory: Memory | None = None):
+                 search_fn=None, read_fn=None, memory: Memory | None = None, image_dir: Path | None = None):
     up = urllib.parse.urlparse(upstream)
     search_fn = search_fn or web_search.search
     read_pages = read_fn or web_search.read_pages
@@ -415,6 +456,9 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                 user_text = last_user_text(req["messages"])
                 last = req["messages"][-1].get("content") if req["messages"] else None
                 images = sum(1 for p in last if isinstance(p, dict) and p.get("type") == "image_url") if isinstance(last, list) else 0
+                if images and image_dir:
+                    sizes = save_images(image_dir, req["messages"][-1])
+                    log.info("画像を受け取りました: %s（%s に保存）", ", ".join(sizes), image_dir)
                 req, suffix = self._augment(req)
             prepared = time.perf_counter() - started
             conn, res = self._open(json.dumps(with_defaults(req, model), ensure_ascii=False).encode("utf-8"))
@@ -532,6 +576,7 @@ def main(argv: list[str] | None = None) -> None:
                    help="Web 検索: auto=「調べて」と最新情報が要る話題 / explicit=「調べて」と言われたときだけ / off")
     p.add_argument("--search-filler", default="", help="調べ始めるときに先に言う一言（空なら言わない）")
     p.add_argument("--data", default=None, help="記憶を置くフォルダ（無ければ記憶しない）")
+    p.add_argument("--image-dir", default=None, help="頭脳に送った画像を保存するフォルダ（確認用。最新 10 枚）")
     p.add_argument("--embed-model", default="bge-m3", help="記憶を探すときに使う、意味のベクトルを作るモデル（空なら言葉の重なりだけで探す）")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -539,7 +584,8 @@ def main(argv: list[str] | None = None) -> None:
     if a.data:
         memory = Memory(Path(a.data), ollama_chat(a.ollama, a.model), ollama_embed(a.ollama, a.embed_model) if a.embed_model else None)
         threading.Thread(target=memory_worker, args=(memory, threading.Event()), daemon=True).start()
-    server = ThreadingHTTPServer((a.host, a.port), make_handler(a.ollama, a.model, a.search, a.search_filler, memory=memory))
+    server = ThreadingHTTPServer((a.host, a.port), make_handler(a.ollama, a.model, a.search, a.search_filler, memory=memory,
+                                                                    image_dir=Path(a.image_dir) if a.image_dir else None))
     if a.model:
         threading.Thread(target=preload, args=(a.ollama, a.model), daemon=True).start()
     if memory and a.embed_model:

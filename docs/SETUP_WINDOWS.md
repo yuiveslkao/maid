@@ -223,6 +223,11 @@ start.bat で起動したまま、別の PowerShell で:
 
 頭脳のモデルが画像に対応しているかは、次で確かめられます。表示の「Capabilities」に `vision` があれば対応しています。
 
+start.bat で起動したまま、別の PowerShell で打ちます（maid が止まっていると「could not locate ollama app」になります）。
+
 ```powershell
 $env:OLLAMA_HOST="127.0.0.1:11436"; .\runtime\ollama\ollama.exe show hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_K_M
 ```
+
+頭脳に実際に送った画像は `runtime\logs\images\` に保存されます（最新 10 枚）。`.\maid.bat logs brain-proxy` にも
+「画像を受け取りました: 1080x608」のように大きさが出ます。返事が画像とずれているときは、ここで「何が送られたか」を見ます。
