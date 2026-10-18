@@ -2,6 +2,7 @@
   "model": "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_K_M",
   "voice": "コハク/あまあま",
   "speed": 1.0,
+  "mic": true,
   "silence_ms": 900,
   "search": "auto",
   "search_filler": "ちょっと調べるね。",

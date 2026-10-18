@@ -39,6 +39,7 @@ IDLE_MINUTES = 30          # これだけ話さなかったら、それまでの
 MAX_NOTE_LINES = 25        # PROFILE.md の最大行数
 # NOW.md の種類と、覚えておく長さ
 NOW_KINDS = {"状況": timedelta(days=1), "約束": timedelta(days=7), "近況": timedelta(days=30)}
+NOTHING = {"なし", "無し", "特になし", "特に無し", "ない", "ありません", "none", "None", "-"}  # 「状況: なし」は書かない
 NOW_LINE_RE = re.compile(r"^- \[(状況|約束|近況)\] (.+?)（(\d{4}-\d{2}-\d{2} \d{2}:\d{2})）$")
 RELATED_EPISODES = 3       # 会話のたびに渡す「前の会話」の数
 MIN_SIMILARITY = 0.5       # これより似ていない前の会話は渡さない
@@ -210,8 +211,9 @@ class Memory:
         for line in answer.splitlines():
             line = line.strip().lstrip("-・* ").strip()
             kind, sep, text = line.replace("：", ":").partition(":")
-            if sep and kind.strip() in out and text.strip():
-                out[kind.strip()].append(text.strip())
+            text = text.strip().rstrip("。")
+            if sep and kind.strip() in out and text and text not in NOTHING:
+                out[kind.strip()].append(text)
         return out
 
     def update_notes(self, turns: list[Turn]) -> None:

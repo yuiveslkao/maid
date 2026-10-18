@@ -99,6 +99,11 @@ class MemoryTest(unittest.TestCase):
         self.m.consolidate()
         self.assertEqual(self.now_text(), "- [近況] 引っ越しの準備中（2026-10-15 20:00）")
 
+    def test_nothing_is_not_written(self):
+        self.m.llm = lambda messages, n: ("状況: なし\n約束：特になし\n近況: 引っ越しの準備中。" if messages[0]["content"] == mem.FACTS_PROMPT else "")
+        self.m.update_notes([mem.Turn(self.t0, "やあ", "うん")])
+        self.assertEqual(self.now_text(), "- [近況] 引っ越しの準備中（2026-10-15 20:00）")
+
     def test_now_expires(self):
         self.m.write_now([("状況", "夜ごはんはアジフライ", self.t0), ("約束", "今度オムライス", self.t0),
                           ("近況", "引っ越しの準備中", self.t0), ("メモ", "手で書いた行", None)])

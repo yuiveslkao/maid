@@ -83,6 +83,7 @@ $Vrm = [string](Get-Setting "vrm")                     # 3D モデル (.vrm) の
 # 「models/xxx.vrm」のような書き方は maid フォルダからの場所とみなす
 if ($Vrm -and -not [IO.Path]::IsPathRooted($Vrm)) { $Vrm = Join-Path $Root $Vrm }
 $VrmView = [string](Get-Setting "vrm_view")            # bust（胸から上）/ full（全身）
+$Mic = if ([bool](Get-Setting "mic")) { "on" } else { "off" }   # マイクを使うか（off = キーボードだけ）
 $ProactiveMinutes = [double](Get-Setting "proactive_minutes")  # 会話がこれだけ無かったらキャラから話しかける（0 で話しかけない）
 $EmbedModel = [string]$UserSettings.embed_model           # 記憶を探すモデル（空なら言葉の重なりだけで探す）
 if ($null -eq $UserSettings.embed_model) { $EmbedModel = [string]$Defaults.embed_model }
@@ -363,7 +364,7 @@ function Invoke-Start {
     } else {
         Say "  Discord ゲートが起動しないので、使わずに直結します（.\maid.bat logs discord-gate）" Yellow
     }
-    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs", "--vrm=$Vrm", "--vrm-view=$VrmView"))) {
+    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs", "--vrm=$Vrm", "--vrm-view=$VrmView", "--mic=$Mic"))) {
         Say "  画面と conf.yaml の準備に失敗しました（今の設定のまま起動します）" Yellow
     }
     if (-not (Test-Port $Ports.Olv)) { Start-Part "open-llm-vtuber" $P.OlvPy @("run_server.py") $P.Olv }

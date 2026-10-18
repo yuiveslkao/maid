@@ -36,11 +36,12 @@ FRONTEND_JS = """// maid が起動のたびに書き換えるファイル（scri
     var ls = window.localStorage;
     ls.setItem("wsUrl", JSON.stringify({ws_url}));
     ls.setItem("baseUrl", JSON.stringify({base_url}));
-    // マイクは止めない（毎回入れ直す。画面の設定を開いて閉じると古い値で上書きされる不具合があるため）
-    ls.setItem("micOn", "true");
+    // マイク（maid.settings.json の mic）。毎回入れ直す（画面の設定を開いて閉じると古い値で上書きされる不具合があるため）
+    // 使うときは止めない。使わないとき（キーボードだけ）は、勝手に戻らないようにする
+    ls.setItem("micOn", "{mic}");
     ls.setItem("autoStopMic", "false");            // 話し終わっても・キャラが話していてもマイクを止めない
-    ls.setItem("autoStartMicOn", "true");          // 割り込んだあともマイクを戻す
-    ls.setItem("autoStartMicOnConvEnd", "true");   // 返事が終わったらマイクを戻す
+    ls.setItem("autoStartMicOn", "{mic}");         // 割り込んだあともマイクを戻す
+    ls.setItem("autoStartMicOnConvEnd", "{mic}");  // 返事が終わったらマイクを戻す
     // 話し終わりの判定（maid.settings.json の silence_ms）。感度は画面で変えた値を残す
     var vad = {{}};
     try {{ vad = JSON.parse(ls.getItem("vadSettings") || "{{}}") || {{}}; }} catch (e) {{}}
@@ -81,8 +82,13 @@ BUNDLE_FIXES = [
     ('useRef(!0),[st,it]=useLocalStorage("autoStopMic"', 'useRef(!1),[st,it]=useLocalStorage("autoStopMic"'),
     ('useRef(!1),[at,lt]=useLocalStorage("autoStartMicOnConvEnd"', 'useRef(!0),[at,lt]=useLocalStorage("autoStartMicOnConvEnd"'),
     ("ut=reactExports.useRef(!1),[,ct]=reactExports.useReducer", "ut=reactExports.useRef(!0),[,ct]=reactExports.useReducer"),
+    # 画面共有を画面の外（ブラウザの「共有を停止」・共有していたウィンドウを閉じるなど）で止めたとき、画面がそれに気づかず
+    # 「共有中」のままになる（止まった共有から画像を取ろうとして失敗し続け、ボタンを押しても「止める」になる）。終わったら共有をやめる
+    ('a(nt),$(!0),tt("")}catch(nt){tt(o("error.failedStartScreenCapture"))',
+     'a(nt),$(!0),tt(""),nt.getVideoTracks().forEach(vt=>vt.addEventListener("ended",()=>{a(null),$(!1)}))}'
+     'catch(nt){tt(o("error.failedStartScreenCapture"))'),
 ]
-BUNDLE_VERSION = "3"  # 本体を書き換えたら上げる（Edge に古い本体を使い回させないため）
+BUNDLE_VERSION = "4"  # 本体を書き換えたら上げる（Edge に古い本体を使い回させないため）
 VAD_FRAME_MS = 32
 
 
@@ -142,7 +148,7 @@ def _setup_vrm(front: Path, vrm: Path | None, view: str, changed: list[str]) -> 
 
 
 def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int,
-                   vrm: Path | None = None, vrm_view: str = "bust") -> list[str]:
+                   vrm: Path | None = None, vrm_view: str = "bust", mic: bool = True) -> list[str]:
     """変更したファイル名の一覧を返す。"""
     index = front / "index.html"
     if not index.exists():
@@ -155,6 +161,7 @@ def patch_frontend(front: Path, ws_url: str, base_url: str, silence_ms: int,
         vrm_cfg = None
     frames = max(3, round(silence_ms / VAD_FRAME_MS))
     js = FRONTEND_JS.format(ws_url=json.dumps(ws_url), base_url=json.dumps(base_url), redemption_frames=frames,
+                            mic="true" if mic else "false",
                             vrm=json.dumps(vrm_cfg and {"url": vrm_cfg["url"], "view": vrm_cfg["view"]}))
     if _write_if_changed(front / "maid-defaults.js", js):
         changed.append("maid-defaults.js")
@@ -298,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--silence-ms", type=int, default=900)
     f.add_argument("--vrm", default="", help="3D モデル (.vrm) のパス。空なら Live2D のまま")
     f.add_argument("--vrm-view", choices=("bust", "full"), default="bust", help="bust = 胸から上 / full = 全身")
+    f.add_argument("--mic", choices=("on", "off"), default="on", help="off = マイクを使わない（キーボードだけ）")
     f.add_argument("--template", default=str(Path(__file__).resolve().parent.parent / "config" / "open-llm-vtuber" / "conf.yaml"))
     v = sub.add_parser("extract-vrm-libs")
     v.add_argument("three")
@@ -311,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
     olv = Path(args.olv)
     if args.cmd == "prepare":
         changed = patch_frontend(olv / "frontend", args.ws_url, args.base_url, args.silence_ms,
-                                 Path(args.vrm) if args.vrm else None, args.vrm_view)
+                                 Path(args.vrm) if args.vrm else None, args.vrm_view, args.mic == "on")
         if changed:
             print("画面の設定を更新しました: " + ", ".join(changed))
         result = patch_conf(olv / "conf.yaml", Path(args.template))

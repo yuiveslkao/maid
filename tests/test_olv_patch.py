@@ -52,11 +52,17 @@ class FrontendTest(unittest.TestCase):
 
         html = (self.front / "index.html").read_text(encoding="utf-8")
         self.assertEqual(html.count("maid-defaults.js"), 1)
-        self.assertIn('main-nu7uwxNJ.js?maid=3"', html)
+        self.assertIn(f'main-nu7uwxNJ.js?maid={olv_patch.BUNDLE_VERSION}"', html)
 
         js = (self.front / "maid-defaults.js").read_text(encoding="utf-8")
         self.assertIn('JSON.stringify("ws://127.0.0.1:12394/client-ws")', js)
         self.assertIn("vad.redemptionFrames = 28;", js)
+
+    def test_mic_off(self):
+        olv_patch.patch_frontend(self.front, "ws://a", "http://b", 900, mic=False)
+        js = (self.front / "maid-defaults.js").read_text(encoding="utf-8")
+        for key in ("micOn", "autoStartMicOn", "autoStartMicOnConvEnd"):
+            self.assertIn(f'ls.setItem("{key}", "false")', js)
 
     def test_ws_url_change_only_rewrites_defaults(self):
         olv_patch.patch_frontend(self.front, "ws://a/client-ws", "http://b", 900)

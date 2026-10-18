@@ -410,12 +410,15 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
             self._proactive = False
             user_text = ""
             started = time.perf_counter()
+            images = 0
             if isinstance(req.get("messages"), list):
                 user_text = last_user_text(req["messages"])
+                last = req["messages"][-1].get("content") if req["messages"] else None
+                images = sum(1 for p in last if isinstance(p, dict) and p.get("type") == "image_url") if isinstance(last, list) else 0
                 req, suffix = self._augment(req)
             prepared = time.perf_counter() - started
             conn, res = self._open(json.dumps(with_defaults(req, model), ensure_ascii=False).encode("utf-8"))
-            self._timing = (started, prepared)
+            self._timing = (started, prepared, images)
             try:
                 if res.status == 200 and req.get("stream"):
                     reply = self._stream(res, suffix)
@@ -462,9 +465,10 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
                 self._chunk(line)
             self._chunk(suffix)
             self._end()
-            started, prepared = getattr(self, "_timing", (time.perf_counter(), 0.0))
-            log.info("返事: 準備 %.1f 秒 / 最初の言葉まで %.1f 秒 / 全部で %.1f 秒（%d 文字）%s", prepared,
+            started, prepared, images = getattr(self, "_timing", (time.perf_counter(), 0.0, 0))
+            log.info("返事: 準備 %.1f 秒 / 最初の言葉まで %.1f 秒 / 全部で %.1f 秒（%d 文字）%s%s", prepared,
                      (first or time.perf_counter()) - started, time.perf_counter() - started, len(text),
+                     f"（画像 {images} 枚つき）" if images else "",
                      "（記憶のまとめ中のため遅いかも）" if memory and memory.busy() else "")
             return text
 
