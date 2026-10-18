@@ -87,8 +87,12 @@ BUNDLE_FIXES = [
     ('a(nt),$(!0),tt("")}catch(nt){tt(o("error.failedStartScreenCapture"))',
      'a(nt),$(!0),tt(""),nt.getVideoTracks().forEach(vt=>vt.addEventListener("ended",()=>{a(null),$(!1)}))}'
      'catch(nt){tt(o("error.failedStartScreenCapture"))'),
+    # 画面共有・カメラの画像を縮めるとき、入れ物（キャンバス）だけ小さくして絵を縮めずに貼っていたため、
+    # 左上しか写っていなかった（画面が 2000 幅なら左の約半分だけ）。絵もキャンバスの大きさに縮めて貼る
+    ('console.error("Failed to get canvas context"),null;lt.drawImage(et,0,0);',
+     'console.error("Failed to get canvas context"),null;lt.drawImage(et,0,0,rt,ot);'),
 ]
-BUNDLE_VERSION = "4"  # 本体を書き換えたら上げる（Edge に古い本体を使い回させないため）
+BUNDLE_VERSION = "5"  # 本体を書き換えたら上げる（Edge に古い本体を使い回させないため）
 VAD_FRAME_MS = 32
 
 
