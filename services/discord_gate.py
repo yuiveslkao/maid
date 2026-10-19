@@ -25,50 +25,17 @@ import argparse
 import asyncio
 import json
 import logging
-import sys
 import time
 from typing import Callable
 
-from winutil import seconds_since_input
+from winutil import discord_using_mic, seconds_since_input
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 log = logging.getLogger("discord_gate")
 
-MIC_KEY = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged"
 AUDIO_TYPES = {"mic-audio-data", "raw-audio-data"}
-
-
-def discord_using_mic() -> bool:
-    """Discord（PTB / Canary 含む）がいまマイクを使っていれば True。Windows 以外は常に False。"""
-    if sys.platform != "win32":
-        return False
-    import winreg
-
-    try:
-        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, MIC_KEY)
-    except OSError:
-        return False
-    with root:
-        i = 0
-        while True:
-            try:
-                name = winreg.EnumKey(root, i)
-            except OSError:
-                return False
-            i += 1
-            # 例: C:#Users#me#AppData#Local#Discord#app-1.0.9200#Discord.exe
-            if not name.lower().split("#")[-1].startswith("discord"):
-                continue
-            try:
-                with winreg.OpenKey(root, name) as k:
-                    stop, _ = winreg.QueryValueEx(k, "LastUsedTimeStop")
-                    start, _ = winreg.QueryValueEx(k, "LastUsedTimeStart")
-            except OSError:
-                continue
-            if stop == 0 and start != 0:  # 使用開始していて、まだ終わっていない
-                return True
 
 
 class Gate:

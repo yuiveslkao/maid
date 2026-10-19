@@ -38,14 +38,15 @@ Open-LLM-VTuber 本体は改造せず、前後に中継を挟んだり、設定�
 | `services/discord_gate.py` | Discord ゲート。Discord で通話中は声を本体に渡さない |
 | `app/maid_app.py` | maid のアプリ（WebView2）。起動の画面・チャットだけの版・フル版（タスクトレイ・デスクトップのキャラ・チャットのウィンドウ） |
 | `app/chat.py` | チャットだけの版の中身。頭脳の中継に直接話しかけ、声で返事するときは文ごとに読ませる |
+| `app/listen.py` | チャットだけの版で声を聞く。マイク → 話し終わりの判定（Silero VAD）→ 音声認識（ReazonSpeech） |
 | `app/common.py` | 設定（`maid.settings.json`）とアイコン（`data\icons\`）の読み書き |
 | `app/ui/` | 起動の画面（`launcher.html`）とチャットだけの版の画面（`chat.html`） |
-| `services/winutil.py` | Windows の小物（最後に PC を触ってからの秒数） |
+| `services/winutil.py` | Windows の小物（最後に PC を触ってからの秒数・Discord で通話中か） |
 | `frontend/maid-vrm.js` | 3D モデル（VRM）を表示する（Open-LLM-VTuber の画面の中・デスクトップのキャラ） |
 | `frontend/character.html` / `character.js` | デスクトップのキャラの画面。Discord ゲートから届く声を鳴らす |
 | `config/maid.settings.default.json` | `maid.settings.json`（いつも使う設定）の既定値 |
 | `config/open-llm-vtuber/conf.yaml` | Open-LLM-VTuber の設定の雛形（maid で使う項目だけ。setup で `runtime/` にコピーされる） |
-| `tests/` | テスト（`runtime\uv\uv.exe run --no-project --python 3.10 --with "websockets>=13" --with openai --with ruamel.yaml --with pyyaml --with pypdf python -m unittest discover -s tests`） |
+| `tests/` | テスト（`runtime\uv\uv.exe run --no-project --python 3.10 --with "websockets>=13" --with openai --with ruamel.yaml --with pyyaml --with pypdf --with numpy python -m unittest discover -s tests`） |
 | `runtime/` | ダウンロードしたもの一式（git の管理外。消せば元通り） |
 | `data/` | 記憶（git の管理外。消すと全部忘れる） |
 | `models/` | 自分で用意した 3D モデルなど（git の管理外） |

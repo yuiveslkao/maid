@@ -119,11 +119,11 @@ class FakeWinreg:
 
 class DetectorTest(unittest.TestCase):
     def detect(self, keys):
-        import discord_gate
+        import winutil
         from unittest import mock
 
         with mock.patch.object(sys, "platform", "win32"), mock.patch.dict(sys.modules, {"winreg": FakeWinreg(keys)}):
-            return discord_gate.discord_using_mic()
+            return winutil.discord_using_mic()
 
     def test_registry_detection(self):
         old = "C:#Users#me#AppData#Local#Discord#app-1.0.9100#Discord.exe"
@@ -136,10 +136,10 @@ class DetectorTest(unittest.TestCase):
         self.assertFalse(self.detect({new: (0, 0)}))                 # 一度も使っていない
 
     def test_non_windows_returns_false(self):
-        import discord_gate
+        import winutil
 
         if sys.platform != "win32":
-            self.assertFalse(discord_gate.discord_using_mic())
+            self.assertFalse(winutil.discord_using_mic())
 
 
 @unittest.skipIf(connect is None, "websockets なし")

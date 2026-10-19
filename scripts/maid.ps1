@@ -38,6 +38,7 @@ $P = @{
     OlvPy       = "$Rt\Open-LLM-VTuber\.venv\Scripts\python.exe"   # Open-LLM-VTuber の Python（setup の uv sync で作る）
     MaidVenv    = "$Rt\maid-venv"
     MaidPy      = "$Rt\maid-venv\Scripts\python.exe"                # maid の部品の Python
+    SileroVad   = "$Rt\models\silero_vad.onnx"                      # 話しはじめ・話し終わりを見つける（チャットだけの版で声を聞くとき）
     Downloads   = "$Rt\downloads"
     Logs        = "$Rt\logs"
 }
@@ -60,7 +61,7 @@ $ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"   # 音声認�
 # 3D 表示に使うライブラリ（npm の配布物から必要なファイルだけ取り出す）
 $VrmLibs = @{ "three" = "https://registry.npmjs.org/three/-/three-0.185.1.tgz"; "three-vrm" = "https://registry.npmjs.org/@pixiv/three-vrm/-/three-vrm-3.5.5.tgz" }
 # maid の部品が使うライブラリ（検索・本文の抜き出し・PDF・Discord ゲート）
-$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13", "pywebview", "pystray", "pillow", "pyyaml")  # pywebview 以降は maid のアプリ（WebView2・タスクトレイ・キャラの設定を読む）
+$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13", "pywebview", "pystray", "pillow", "pyyaml", "sherpa-onnx", "sounddevice", "numpy")  # pywebview 以降は maid のアプリ（WebView2・タスクトレイ・キャラの設定を読む・チャットだけの版で声を聞く）
 
 # ------------------------------------------------------------------ 設定（maid.settings.json）
 # 無ければ config\maid.settings.default.json をコピーして作る。書かれていない項目は既定値を使う
@@ -316,6 +317,11 @@ function Install-ReazonSpeech {
     Remove-Item -Force $archive -ErrorAction SilentlyContinue   # 使うのは展開したものだけ
 }
 
+function Install-SileroVad {
+    if (Test-Path $P.SileroVad) { return }
+    Get-File "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" $P.SileroVad
+}
+
 
 # ゲート経由で本体につながり、最初のメッセージが返ってくるか確かめる
 function Test-Gate {
@@ -446,6 +452,17 @@ function Invoke-Start {
 function Invoke-Chat {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Install-MaidVenv
+    $asrDir = "$($P.Olv)\models\$ReazonName"
+    $listen = $false
+    if ($Mic -eq "on") {
+        # 声で話しかける: 音声認識はフル版と同じ ReazonSpeech を使う
+        try {
+            if (Test-Path $P.OlvPy) { Install-ReazonSpeech }
+            Install-SileroVad
+            $listen = Test-Path "$asrDir\tokens.txt"
+        } catch { Say "  音声認識を準備できませんでした: $($_.Exception.Message)" Yellow }
+        if (-not $listen) { Say "  音声認識のモデルが無いので、声では話しかけられません（先に setup.bat を実行してください）" Yellow }
+    }
     Say "部品を起動しています（頭脳$(if ($VoiceReply) { '・声' })）" Cyan
     Start-Brain
     $groups = @("brain")
@@ -454,8 +471,9 @@ function Invoke-Chat {
     $a = @("`"$Root\app\maid_app.py`"", "chat", "--storage", "`"$Rt\webview`"", "--data", "`"$DataDir`"",
         "--conf", "`"$($P.Olv)\conf.yaml`"", "--proxy", "http://127.0.0.1:$($Ports.BrainProxy)", "--proactive-minutes", "$ProactiveMinutes")
     if ($VoiceReply) { $a += @("--tts", "http://127.0.0.1:$($Ports.TtsBridge)", "--voice") }
+    if ($listen) { $a += @("--asr-dir", "`"$asrDir`"", "--vad", "`"$($P.SileroVad)`"", "--silence-ms", "$SilenceMs", "--mic") }
     $app = Start-Part "app" $P.MaidPy $a -PassThru
-    Say ("  頭脳: $Model / 検索: $Search / 声: $(if ($VoiceReply) { $Voice } else { 'なし' }) （起動 {0:N0} 秒）" -f $sw.Elapsed.TotalSeconds) Gray
+    Say ("  頭脳: $Model / 検索: $Search / 声: $(if ($VoiceReply) { $Voice } else { 'なし' }) / マイク: $(if ($listen) { 'あり' } else { 'なし' }) （起動 {0:N0} 秒）" -f $sw.Elapsed.TotalSeconds) Gray
     Say "`n準備完了。チャットのウィンドウを閉じると、記憶をまとめて全部止まります（このウィンドウで Ctrl+C でも）。" Green
     Wait-Quit $app $false
 }

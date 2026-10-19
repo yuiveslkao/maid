@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
 from chat import ChatSession, Speaker, load_character, proactive_loop  # noqa: E402
 from common import ROOT, Icons, Settings  # noqa: E402
-from winutil import seconds_since_input  # noqa: E402
+from winutil import discord_using_mic, seconds_since_input  # noqa: E402
 
 log = logging.getLogger("maid_app")
 UI = Path(__file__).resolve().parent / "ui"
@@ -241,7 +241,7 @@ def run_chat(a) -> int:
     character = load_character(Path(a.conf) if a.conf else None)
     icons = Icons(Path(a.data) / "icons")
     session = ChatSession(a.proxy, character, Path(a.data) / "chat.json")
-    state = {"voice": bool(a.voice and a.tts)}
+    state = {"voice": bool(a.voice and a.tts), "reply": 0}
     holder: dict = {}
     stop = threading.Event()
 
@@ -253,26 +253,50 @@ def run_chat(a) -> int:
     speaker = Speaker(a.tts, lambda b64: js("audio", b64)) if a.tts else None
 
     def reply(text: str, proactive: bool = False) -> None:
+        # 声で割り込まれたら、前の返事の続きは画面にも声にも出さない
+        state["reply"] += 1
+        rid = state["reply"]
         if speaker:
             speaker.reset()
         if proactive:
             js("proactive")
 
         def chunk(piece: str) -> None:
+            if rid != state["reply"]:
+                return
             js("chunk", piece)
             if speaker and state["voice"]:
                 speaker.feed(piece)
 
         session.send(text, chunk, proactive=proactive)
+        if rid != state["reply"]:
+            return
         if speaker and state["voice"]:
             speaker.feed("", final=True)
         js("done")
+
+    def heard(text: str) -> None:
+        """声で話しかけられた。返事の途中なら止めて、聞こえた文を送る。"""
+        session.cancel.set()
+        if speaker:
+            speaker.reset()
+        js("heard", text)
+        threading.Thread(target=reply, args=(text,), daemon=True).start()
+
+    listener = None
+    if a.asr_dir and a.vad:
+        from listen import Listener
+
+        listener = Listener(Path(a.asr_dir), Path(a.vad), heard, lambda st: js("micState", st),
+                            silence_ms=a.silence_ms, blocked=discord_using_mic, enabled=a.mic)
 
     class Api:
         def init(self):
             return {"name": character["name"], "human": character["human"],
                     "icons": {k: icons.data_url(k) for k in ("character", "user")},
-                    "history": session.history, "voice": state["voice"], "voiceAvailable": bool(a.tts)}
+                    "history": session.history, "voice": state["voice"], "voiceAvailable": bool(a.tts),
+                    "mic": bool(listener and listener.enabled), "micAvailable": bool(listener),
+                    "micState": listener.state if listener else ""}
 
         def send(self, text):
             threading.Thread(target=reply, args=(str(text),), daemon=True).start()
@@ -287,6 +311,11 @@ def run_chat(a) -> int:
             if speaker and not state["voice"]:
                 speaker.reset()
 
+        def set_mic(self, on):
+            if listener:
+                listener.set_enabled(on)
+                return listener.state
+
         def open_url(self, url):
             if str(url).startswith(("http://", "https://")):
                 webbrowser.open(url)
@@ -297,8 +326,12 @@ def run_chat(a) -> int:
     threading.Thread(target=proactive_loop, args=(session, a.proactive_minutes, lambda: reply("", proactive=True),
                                                   seconds_since_input, stop), daemon=True).start()
     holder["window"] = webview.create_window(character["name"], url=str(UI / "chat.html"), js_api=Api(), width=760, height=860)
+    if listener:
+        listener.start()
     webview.start(private_mode=False, storage_path=a.storage)
     stop.set()
+    if listener:
+        listener.stop.set()
     return 0
 
 
@@ -315,6 +348,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--proxy", default="http://127.0.0.1:11434", help="頭脳の中継")
     c.add_argument("--tts", default="", help="声の中継（空なら声で返事しない）")
     c.add_argument("--voice", action="store_true", help="最初から声で返事する")
+    c.add_argument("--asr-dir", default="", help="音声認識のモデル（ReazonSpeech）のフォルダ。空なら声で話しかけられない")
+    c.add_argument("--vad", default="", help="話しはじめと話し終わりを見つけるモデル（silero_vad.onnx）")
+    c.add_argument("--silence-ms", type=int, default=900, help="無音がこの長さ続いたら話し終わり")
+    c.add_argument("--mic", action="store_true", help="最初からマイクで聞く")
     c.add_argument("--proactive-minutes", type=float, default=0, help="会話がこれだけ無かったらキャラから話しかける（0 で話しかけない）")
     f = sub.add_parser("full", parents=[common])
     f.add_argument("--chat-url", required=True)

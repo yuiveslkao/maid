@@ -19,6 +19,8 @@
   header button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 999px;
     padding: 5px 12px; cursor: pointer; font: inherit; font-size: 13px; }
   header button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  header button.hearing { box-shadow: 0 0 0 3px #f9c2d6; }
+  #micNote { font-size: 12px; color: var(--sub); }
   .icon { width: 40px; height: 40px; border-radius: 50%; flex: none; object-fit: cover; background: var(--line);
     display: flex; align-items: center; justify-content: center; color: #fff; font-weight: bold; }
   #log { flex: 1; overflow-y: auto; padding: 16px 14px; display: flex; flex-direction: column; gap: 12px; }
@@ -44,18 +46,22 @@
 <header>
   <div id="charIcon" class="icon"></div>
   <div class="name" id="charName"></div>
+  <span id="micNote"></span>
+  <button id="micBtn" title="声で話しかける">マイク</button>
   <button id="voiceBtn" title="声で返事する">声</button>
   <button id="clearBtn" title="画面の会話を消す（覚えたことは消えません）">会話を消す</button>
 </header>
 <div id="log"></div>
 <footer>
-  <textarea id="input" placeholder="メッセージ（Enter で送る / Shift+Enter で改行）"></textarea>
+  <textarea id="input" placeholder="メッセージ（Enter で送る / Shift+Enter で改行。マイクがオンなら話しかけても OK）"></textarea>
   <button id="sendBtn">送る</button>
 </footer>
 <script>
 (function () {
   var log = document.getElementById("log"), input = document.getElementById("input");
   var sendBtn = document.getElementById("sendBtn"), voiceBtn = document.getElementById("voiceBtn");
+  var micBtn = document.getElementById("micBtn"), micNote = document.getElementById("micNote"), mic = false;
+  var MIC_NOTES = { loading: "音声認識を準備中…", discord: "Discord 通話中は聞きません", error: "マイクを使えません" };
   var info = { name: "", human: "", icons: {} }, voice = false, current = null, currentText = "", busy = false;
   var audioQueue = [], playing = null;
 
@@ -145,8 +151,25 @@
       current = null;
       setBusy(false);
     },
-    audio: function (b64) { audioQueue.push(b64); playNext(); }
+    audio: function (b64) { audioQueue.push(b64); playNext(); },
+    // 声で話しかけられた（返事の途中なら、そこで打ち切って次の返事へ）
+    heard: function (t) {
+      stopAudio();
+      if (current) {
+        current.classList.remove("thinking");
+        if (!currentText) current.parentNode.remove();
+        current = null;
+      }
+      addRow("user", t);
+      startReply();
+    },
+    micState: function (st) { showMic(st); }
   };
+
+  function showMic(st) {
+    micBtn.className = mic ? (st === "speaking" ? "on hearing" : "on") : "";
+    micNote.textContent = mic ? (MIC_NOTES[st] || "") : "";
+  }
 
   function send() {
     if (busy) {  // 止める
@@ -167,6 +190,11 @@
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
+  micBtn.onclick = function () {
+    mic = !mic;
+    showMic("off");
+    window.pywebview.api.set_mic(mic).then(showMic);
+  };
   voiceBtn.onclick = function () {
     voice = !voice;
     voiceBtn.className = voice ? "on" : "";
@@ -193,6 +221,9 @@
       voice = r.voice;
       voiceBtn.className = voice ? "on" : "";
       voiceBtn.style.display = r.voiceAvailable ? "" : "none";
+      mic = r.mic;
+      micBtn.style.display = r.micAvailable ? "" : "none";
+      showMic(r.micState);
       if (!r.history.length) log.innerHTML = '<div class="empty">話しかけてみてね</div>';
       r.history.forEach(function (m) { addRow(m.role === "user" ? "user" : "character", m.content); });
       input.focus();
