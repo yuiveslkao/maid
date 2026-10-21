@@ -118,7 +118,7 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(voices[1], {"id": 101, "speaker": "まい", "style": "あまあま"})
 
     def test_works_with_openai_client(self):
-        """Open-LLM-VTuber の openai_tts と同じ呼び方で動くか（openai が入っていれば）。"""
+        """OpenAI 互換の TTS として動くか（openai が入っていれば）。"""
         try:
             from openai import OpenAI
         except ImportError:

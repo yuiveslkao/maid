@@ -12,23 +12,15 @@
   h1 { font-size: 20px; margin: 0 0 14px; }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 12px; }
   h2 { font-size: 14px; margin: 0 0 8px; color: var(--sub); font-weight: normal; }
-  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .mode { border: 2px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
-  .mode.on { border-color: var(--accent); background: #fff0f5; }
-  .mode b { display: block; font-size: 15px; margin-bottom: 4px; }
-  .mode span { color: var(--sub); font-size: 12px; }
   label.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; }
   label.row small { display: block; color: var(--sub); font-size: 12px; }
-  label.row.off { opacity: .45; pointer-events: none; }
   select, input[type=number] { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
   input[type=number] { width: 60px; }
   input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   .icons { display: flex; gap: 22px; }
   .iconbox { text-align: center; }
   .iconbox img, .iconbox .ph { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); display: block; margin: 0 auto 6px; background: var(--line); }
-  .iconbox button, .vrm button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 3px 10px; cursor: pointer; margin: 2px; }
-  .vrm { display: flex; align-items: center; gap: 8px; }
-  .vrm code { flex: 1; font-size: 12px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .iconbox button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 3px 10px; cursor: pointer; margin: 2px; }
   .bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px;
     background: var(--panel); border-top: 1px solid var(--line); }
   .bar button { font: inherit; font-weight: bold; border-radius: 12px; padding: 9px 22px; cursor: pointer; border: 1px solid var(--line); background: #fff; }
@@ -39,17 +31,9 @@
 <h1 id="title">maid を起動</h1>
 
 <section>
-  <h2>どれで起動する？</h2>
-  <div class="modes">
-    <div class="mode" data-mode="chat"><b>チャットだけ</b><span>文字かマイクで話す。3D と画面共有なしで、軽くて起動が速い。声の返事はえらべる</span></div>
-    <div class="mode" data-mode="full"><b>フル</b><span>声で会話・デスクトップの 3D キャラ・画面共有</span></div>
-  </div>
-</section>
-
-<section>
   <h2>使うもの</h2>
-  <label class="row" data-only="chat"><span>声で返事する<small>チャットだけのとき。AivisSpeech も起動する</small></span><input type="checkbox" id="voice_reply"></label>
-  <label class="row"><span>マイクを使う<small>声で話しかける。キーボードだけなら外す（チャットの画面でも切り替えられる）</small></span><input type="checkbox" id="mic"></label>
+  <label class="row"><span>声で返事する<small>AivisSpeech も起動する（メモリを 1GB ほど使う。会話の画面の「声」でも切り替えられる）</small></span><input type="checkbox" id="voice_reply"></label>
+  <label class="row"><span>マイクを使う<small>声で話しかける。キーボードだけなら外す（会話の画面の「マイク」でも切り替えられる）</small></span><input type="checkbox" id="mic"></label>
   <label class="row"><span>Web 検索<small>「調べて」と頼んだとき（おまかせ: 最新の情報が要りそうなときも）</small></span>
     <select id="search"><option value="auto">おまかせ</option><option value="explicit">頼んだときだけ</option><option value="off">使わない</option></select></label>
   <label class="row"><span>覚える<small>会話から、あなたのことや今のことを覚える（data フォルダ）</small></span><input type="checkbox" id="memory"></label>
@@ -58,7 +42,7 @@
 </section>
 
 <section>
-  <h2>アイコン（チャットに出る）</h2>
+  <h2>アイコン</h2>
   <div class="icons">
     <div class="iconbox" data-kind="character"><span class="ph"></span><div id="charLabel">キャラ</div>
       <button data-act="pick">えらぶ</button><button data-act="remove">消す</button></div>
@@ -68,11 +52,6 @@
   <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
 </section>
 
-<section data-only="full">
-  <h2>3D モデル（フルのとき、デスクトップに出る）</h2>
-  <div class="vrm"><code id="vrm">（なし）</code><button id="vrmPick">えらぶ</button><button id="vrmClear">外す</button></div>
-</section>
-
 <div class="bar">
   <button id="quit">やめる</button>
   <button id="go" class="go">起動</button>
@@ -80,15 +59,8 @@
 
 <script>
 (function () {
-  var state = {}, pickingKind = null;
+  var pickingKind = null;
   var $ = function (id) { return document.getElementById(id); };
-
-  function setMode(mode) {
-    state.mode = mode;
-    document.querySelectorAll(".mode").forEach(function (el) { el.classList.toggle("on", el.dataset.mode === mode); });
-    document.querySelectorAll("[data-only]").forEach(function (el) { el.classList.toggle("off", el.dataset.only !== mode); });
-    document.querySelectorAll("section[data-only]").forEach(function (el) { el.style.display = el.dataset.only === mode ? "" : "none"; });
-  }
 
   function showIcon(kind, src) {
     var box = document.querySelector('.iconbox[data-kind="' + kind + '"]');
@@ -99,7 +71,6 @@
     old.replaceWith(el);
   }
 
-  document.querySelectorAll(".mode").forEach(function (el) { el.onclick = function () { setMode(el.dataset.mode); }; });
   document.querySelectorAll(".iconbox button").forEach(function (b) {
     b.onclick = function () {
       var kind = b.closest(".iconbox").dataset.kind;
@@ -116,28 +87,21 @@
     };
     r.readAsDataURL(f);
   };
-  $("vrmPick").onclick = function () {
-    window.pywebview.api.pick_vrm().then(function (p) { if (p) { state.vrm = p; $("vrm").textContent = p; } });
-  };
-  $("vrmClear").onclick = function () { state.vrm = ""; $("vrm").textContent = "（なし）"; };
   $("proactive").onchange = function () { $("proactive_minutes").disabled = !$("proactive").checked; };
 
   $("go").onclick = function () {
     window.pywebview.api.launch({
-      mode: state.mode,
       voice_reply: $("voice_reply").checked,
       mic: $("mic").checked,
       search: $("search").value,
       memory: $("memory").checked,
-      proactive_minutes: $("proactive").checked ? Math.max(1, parseInt($("proactive_minutes").value || "15", 10)) : 0,
-      vrm: state.vrm || ""
+      proactive_minutes: $("proactive").checked ? Math.max(1, parseInt($("proactive_minutes").value || "15", 10)) : 0
     });
   };
   $("quit").onclick = function () { window.pywebview.api.quit(); };
 
   window.addEventListener("pywebviewready", function () {
     window.pywebview.api.load().then(function (s) {
-      state = s;
       $("title").textContent = s.name + " を起動";
       $("charLabel").textContent = s.name;
       $("voice_reply").checked = !!s.voice_reply;
@@ -147,10 +111,8 @@
       $("proactive").checked = s.proactive_minutes > 0;
       $("proactive_minutes").value = s.proactive_minutes > 0 ? s.proactive_minutes : 15;
       $("proactive_minutes").disabled = !(s.proactive_minutes > 0);
-      $("vrm").textContent = s.vrm || "（なし）";
       showIcon("character", s.icons.character);
       showIcon("user", s.icons.user);
-      setMode(s.mode === "full" ? "full" : "chat");
     });
   });
 })();

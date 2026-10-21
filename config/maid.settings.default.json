@@ -1,5 +1,4 @@
 {
-  "mode": "chat",
   "model": "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_K_M",
   "voice": "コハク/あまあま",
   "speed": 1.0,
@@ -9,11 +8,6 @@
   "search": "auto",
   "search_filler": "ちょっと調べるね。",
   "memory": true,
-  "vrm": "",
-  "vrm_view": "auto",
-  "app": true,
-  "character_on_top": false,
-  "character_click_through": true,
   "proactive_minutes": 15,
   "embed_model": "bge-m3"
 }

@@ -4,19 +4,18 @@
 #   片付けるときは maid フォルダを消せばよい（例外は docs\SETUP_WINDOWS.md の「片付け方」を参照）。
 #
 #   maid.bat setup            必要なものを runtime\ にダウンロードする（何度実行してもよい）
-#   maid.bat launch           起動の画面を出す（start.bat と同じ。どれで起動するか・使うものを選ぶ）
-#   maid.bat start            フル版で起動する（声で会話・デスクトップの 3D キャラ）
-#   maid.bat chat             チャットだけの版で起動する（軽い。Open-LLM-VTuber を使わない）
+#   maid.bat start            起動の画面を出してから起動する（start.bat と同じ。使うもの・アイコンを選ぶ）
+#   maid.bat run              起動の画面を出さずに、いつもの設定ですぐ起動する
 #   maid.bat stop             裏に残っている maid の部品を全部止める
 #   maid.bat doctor           起動中に、返事が来ない・声が出ないなどの原因を調べる
-#   maid.bat logs <名前>      裏の部品のログを別ウィンドウで見る（ollama / brain-proxy / tts-bridge など）
-#   maid.bat clean            ログ・一時ファイル・使っていないモデルを消す（-History で会話の履歴も）
+#   maid.bat logs <名前>      裏の部品のログを別ウィンドウで見る（app / brain-proxy / tts-bridge など）
+#   maid.bat clean            ログ・一時ファイル・使っていないものを消す（-History で会話の画面の履歴も）
 #   maid.bat clean -Memory    覚えたこと（メモ・前の会話の要約）だけを消し、会話の記録から覚え直させる
 
 param(
     [Parameter(Position = 0)][string]$Command = "help",
     [Parameter(Position = 1)][string]$Arg = "",
-    [switch]$History,                # clean で会話の履歴も消す
+    [switch]$History,                # clean で会話の画面の履歴も消す
     [switch]$Memory                  # clean で覚えたことを消して、会話の記録から覚え直させる
 )
 
@@ -28,40 +27,33 @@ $ProgressPreference = "SilentlyContinue"   # PowerShell 5.1 のダウンロー�
 $Root = Split-Path -Parent $PSScriptRoot
 $Rt = Join-Path $Root "runtime"
 $Svc = Join-Path $Root "services"
+$ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"   # 音声認識のモデル（日本語専用）
 $P = @{
     Uv          = "$Rt\uv\uv.exe"
     SevenZip    = "$Rt\tools\7zr.exe"
     Ollama      = "$Rt\ollama\ollama.exe"
     OllamaModel = "$Rt\ollama-models"
     AivisDir    = "$Rt\aivisspeech-engine"
-    Olv         = "$Rt\Open-LLM-VTuber"
-    OlvPy       = "$Rt\Open-LLM-VTuber\.venv\Scripts\python.exe"   # Open-LLM-VTuber の Python（setup の uv sync で作る）
     MaidVenv    = "$Rt\maid-venv"
-    MaidPy      = "$Rt\maid-venv\Scripts\python.exe"                # maid の部品の Python
-    SileroVad   = "$Rt\models\silero_vad.onnx"                      # 話しはじめ・話し終わりを見つける（チャットだけの版で声を聞くとき）
+    MaidPy      = "$Rt\maid-venv\Scripts\python.exe"                # maid の Python
+    Asr         = "$Rt\models\$ReazonName"                          # 声を文字にする
+    SileroVad   = "$Rt\models\silero_vad.onnx"                      # 話しはじめ・話し終わりを見つける
+    Old         = "$Rt\Open-LLM-VTuber"                             # 前に使っていた基盤（clean で消す）
     Downloads   = "$Rt\downloads"
     Logs        = "$Rt\logs"
 }
-# 本物の Ollama は Ollama に、いつもの 11434 には頭脳の中継 (services\llm_proxy.py) を置く。
-# Open-LLM-VTuber の conf.yaml は 11434 を見たままでよい
+# 本物の Ollama は 11436 に、頭脳の中継 (services\llm_proxy.py) を 11434 に置く
 $Ports = @{
     Ollama     = 11436
     BrainProxy = 11434
     Aivis      = 10101
     TtsBridge  = 10102
-    Olv        = 12393
-    Gate       = 12394
 }
-$Ports["brain-proxy"] = $Ports.BrainProxy; $Ports["tts-bridge"] = $Ports.TtsBridge; $Ports["discord-gate"] = $Ports.Gate
-$OlvUrl = "http://127.0.0.1:$($Ports.Olv)"
-$OlvTag = "v1.2.1"
-$OlvFrontendCommit = "06a659b114fff788cf0daaa86e484576db4975bf"   # v1.2.1 が参照しているビルド済み画面
-$PyVer = "3.10"   # maid の部品も Open-LLM-VTuber と同じ Python を使う（Python を 2 つ入れないため）
-$ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"   # 音声認識のモデル（日本語専用）
-# 3D 表示に使うライブラリ（npm の配布物から必要なファイルだけ取り出す）
-$VrmLibs = @{ "three" = "https://registry.npmjs.org/three/-/three-0.185.1.tgz"; "three-vrm" = "https://registry.npmjs.org/@pixiv/three-vrm/-/three-vrm-3.5.5.tgz" }
-# maid の部品が使うライブラリ（検索・本文の抜き出し・PDF・Discord ゲート）
-$MaidPackages = @("ddgs", "trafilatura", "pypdf", "websockets>=13", "pywebview", "pystray", "pillow", "pyyaml", "sherpa-onnx", "sounddevice", "numpy")  # pywebview 以降は maid のアプリ（WebView2・タスクトレイ・キャラの設定を読む・チャットだけの版で声を聞く）
+$Ports["brain-proxy"] = $Ports.BrainProxy; $Ports["tts-bridge"] = $Ports.TtsBridge
+$PyVer = "3.10"
+$AsrFiles = @("encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.int8.onnx", "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt")
+# maid が使うライブラリ（検索・本文の抜き出し・PDF / 画面（WebView2）・画像・キャラの設定 / 声を聞く）
+$MaidPackages = @("ddgs", "trafilatura", "pypdf", "pywebview", "pillow", "pyyaml", "sherpa-onnx", "sounddevice", "numpy")
 
 # ------------------------------------------------------------------ 設定（maid.settings.json）
 # 無ければ config\maid.settings.default.json をコピーして作る。書かれていない項目は既定値を使う
@@ -78,26 +70,17 @@ function Get-Setting([string]$Name) {
 $Model = [string](Get-Setting "model")                 # 頭脳のモデル（Ollama の名前）
 $Voice = [string](Get-Setting "voice")                 # 声（話者名/スタイル名）
 $Speed = [double](Get-Setting "speed")                 # 話す速さ
-$SilenceMs = [int](Get-Setting "silence_ms")           # 無音がこの長さ続いたら AI に送る（ミリ秒）
+$SilenceMs = [int](Get-Setting "silence_ms")           # 無音がこの長さ続いたら話し終わり（ミリ秒）
 $Search = [string](Get-Setting "search")               # auto / explicit / off
 $SearchFiller = [string]$UserSettings.search_filler    # 調べる前にすぐ言う一言（空なら言わない）
 if ($null -eq $UserSettings.search_filler) { $SearchFiller = [string]$Defaults.search_filler }
-$Vrm = [string](Get-Setting "vrm")                     # 3D モデル (.vrm) のパス。空なら Live2D
-# 「models/xxx.vrm」のような書き方は maid フォルダからの場所とみなす
-if ($Vrm -and -not [IO.Path]::IsPathRooted($Vrm)) { $Vrm = Join-Path $Root $Vrm }
-$VrmView = [string](Get-Setting "vrm_view")            # auto / bust（胸から上）/ full（全身）
 $UseMemory = [bool](Get-Setting "memory")              # 覚える（会話から、あなたのことや今のことを覚える）
-$VoiceReply = [bool](Get-Setting "voice_reply")        # チャットだけの版で、声で返事する
-$UseApp = [bool](Get-Setting "app")                     # maid のアプリ（タスクトレイ・デスクトップのキャラ・チャットのウィンドウ）。false なら Edge で開く
-$CharacterOnTop = [bool](Get-Setting "character_on_top")              # デスクトップのキャラをいつも手前に出す
-$CharacterClickThrough = [bool](Get-Setting "character_click_through")  # デスクトップのキャラのクリックをすり抜けさせる
-$Desktop = $UseApp -and [bool]$Vrm                      # デスクトップにキャラを出すか（アプリで、3D モデルがあるとき）
-if ($VrmView -eq "auto" -or -not $VrmView) { $VrmView = if ($Desktop) { "full" } else { "bust" } }
-$Mic = if ([bool](Get-Setting "mic")) { "on" } else { "off" }   # マイクを使うか（off = キーボードだけ）
+$VoiceReply = [bool](Get-Setting "voice_reply")        # 声で返事する
+$Mic = [bool](Get-Setting "mic")                       # マイクで聞く
 $ProactiveMinutes = [double](Get-Setting "proactive_minutes")  # 会話がこれだけ無かったらキャラから話しかける（0 で話しかけない）
 $EmbedModel = [string]$UserSettings.embed_model           # 記憶を探すモデル（空なら言葉の重なりだけで探す）
 if ($null -eq $UserSettings.embed_model) { $EmbedModel = [string]$Defaults.embed_model }
-$DataDir = Join-Path $Root "data"                      # 記憶（会話ログ・メモ・前の会話の要約）。git には入れない
+$DataDir = Join-Path $Root "data"                      # 記憶・会話・アイコン。git には入れない
 
 # ------------------------------------------------------------------ このプロセスの中だけの環境変数（Windows の設定は変えない）
 $env:UV_CACHE_DIR = "$Rt\cache\uv"
@@ -105,11 +88,9 @@ $env:UV_PYTHON_INSTALL_DIR = "$Rt\python"
 $env:UV_PYTHON_BIN_DIR = "$Rt\python\bin"
 $env:UV_PYTHON_INSTALL_REGISTRY = "0"       # Python をレジストリに登録しない
 $env:UV_PYTHON_PREFERENCE = "only-managed"  # PC に入っている Python は使わない
-$env:HF_HOME = "$Rt\cache\huggingface"      # ライブラリが勝手にダウンロードしても runtime\ に入るように
-$env:TORCH_HOME = "$Rt\cache\torch"
 $env:OLLAMA_MODELS = $P.OllamaModel
 $env:OLLAMA_HOST = "127.0.0.1:$($Ports.Ollama)"
-$env:OLLAMA_KEEP_ALIVE = "-1"   # モデルを GPU に載せっぱなしにする（外れると読み込み直しに 1 分以上かかる）
+$env:OLLAMA_KEEP_ALIVE = "-1"   # 頭脳のモデルを GPU に載せっぱなしにする（外れると読み込み直しに 1 分以上かかる）
 $env:PYTHONUNBUFFERED = "1"
 $env:PYTHONIOENCODING = "utf-8"   # ログを UTF-8 で書かせる（Windows の Python は Shift-JIS で書くので logs で文字化けする）
 
@@ -158,27 +139,43 @@ function Find-AivisExe {
     return $null
 }
 
-# Open-LLM-VTuber への修正（scripts\olv_patch.py）。conf.yaml を扱うので Open-LLM-VTuber の Python で動かす
-# （uv run --project は毎回ライブラリの確認をして数秒かかるので、Python を直接使う）
-function Invoke-OlvPatch([string[]]$PatchArgs) {
-    # 出力は画面に出すだけにする（関数の戻り値に混ざらないように）
-    & $P.OlvPy "$Root\scripts\olv_patch.py" @($PatchArgs + @("--olv", $P.Olv)) | Out-Host
-    return ($LASTEXITCODE -eq 0)
-}
-
-# maid の部品用の Python 環境（runtime\maid-venv）。ライブラリの一覧が変わったときだけ入れ直す
+# maid の Python 環境（runtime\maid-venv）。ライブラリの一覧が変わったら作り直す（使わなくなったものを残さないため。
+# ダウンロードしたものは runtime\cache に残っているので速い）
 function Install-MaidVenv {
     $stamp = "$($P.MaidVenv)\maid-packages.txt"
     $want = $MaidPackages -join " "
     if ((Test-Path $P.MaidPy) -and (Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $want)) { return }
-    Say "  maid の部品用のライブラリを入れます（初回だけ）" Cyan
-    if (-not (Test-Path $P.MaidPy)) {
-        & $P.Uv venv --python $PyVer $P.MaidVenv | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "maid の部品用の Python を作れませんでした。" }
-    }
+    Say "  maid のライブラリを入れます（初回と、使うライブラリが変わったときだけ）" Cyan
+    if (Test-Path $P.MaidVenv) { Remove-Item -Recurse -Force $P.MaidVenv }
+    & $P.Uv venv --python $PyVer $P.MaidVenv | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "maid の Python を作れませんでした。" }
     & $P.Uv pip install --python $P.MaidPy @MaidPackages | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "maid の部品用のライブラリを入れられませんでした。" }
+    if ($LASTEXITCODE -ne 0) { throw "maid のライブラリを入れられませんでした。" }
     Set-Content -Path $stamp -Value $want -Encoding ASCII
+}
+
+# 日本語の音声認識モデル (ReazonSpeech, sherpa-onnx 版。初回だけ約 700MB)
+function Install-ReazonSpeech {
+    if (Test-Path "$($P.Asr)\tokens.txt") { return }
+    $old = "$($P.Old)\models\$ReazonName"
+    if (Test-Path "$old\tokens.txt") {
+        # 前に Open-LLM-VTuber の中に置いていたものを引っ越す（ダウンロードし直さない）
+        New-Item -ItemType Directory -Force -Path (Split-Path $P.Asr) | Out-Null
+        Move-Item $old $P.Asr
+        return
+    }
+    Say "  日本語の音声認識モデル (ReazonSpeech) をダウンロードします（約 700MB、初回だけ）" Cyan
+    $archive = "$($P.Downloads)\$ReazonName.tar.bz2"
+    Get-File "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$ReazonName.tar.bz2" $archive
+    New-Item -ItemType Directory -Force -Path (Split-Path $P.Asr) | Out-Null
+    # 必要なファイルだけ取り出す（tar.exe は Windows に標準で入っている）
+    & tar.exe -xjf $archive -C (Split-Path $P.Asr) @($AsrFiles | ForEach-Object { "$ReazonName/$_" })
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$($P.Asr)\tokens.txt")) { throw "音声認識モデルの展開に失敗しました。" }
+    Remove-Item -Force $archive -ErrorAction SilentlyContinue   # 使うのは展開したものだけ
+}
+
+function Install-SileroVad {
+    Get-File "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" $P.SileroVad
 }
 
 # 裏で動く部品はウィンドウを出さず、出力を runtime\logs\<名前>.log に書く。
@@ -208,7 +205,7 @@ function Save-Memory {
 
 function Stop-Maid {
     # runtime\ の中のプログラムだけを止める。
-    # 数はプログラムの個数（uv とその中の python、Ollama とその中の llama-server など）なので毎回変わる
+    # 数はプログラムの個数（Ollama とその中の llama-server など）なので毎回変わる
     $procs = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($Rt, [StringComparison]::OrdinalIgnoreCase) })
     foreach ($pr in $procs) { Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue }
     return $procs.Count
@@ -218,8 +215,8 @@ function Get-OllamaModels {
     return @((Invoke-RestMethod "http://127.0.0.1:$($Ports.Ollama)/api/tags").models | ForEach-Object { $_.name })
 }
 
-function Test-ModelIn([string[]]$Names) {
-    return ($Names -contains $Model) -or ($Names -contains "$($Model):latest")
+function Test-ModelIn([string[]]$Names, [string]$Name) {
+    return ($Names -contains $Name) -or ($Names -contains "$($Name):latest")
 }
 
 # ------------------------------------------------------------------ 部品の起動（待たずに起動だけする。待つのは Wait-Parts）
@@ -249,20 +246,12 @@ function Start-Voice {
     Start-PyPart "tts-bridge" "$Svc\tts_bridge.py" @("--port", "$($Ports.TtsBridge)", "--aivis-url", "http://127.0.0.1:$($Ports.Aivis)", "--voice", "`"$Voice`"", "--speed", "$Speed")
 }
 
-function Start-Parts {
-    Start-Brain
-    Start-Voice
-    Start-PyPart "discord-gate" "$Svc\discord_gate.py" @("--port", "$($Ports.Gate)", "--backend", "ws://127.0.0.1:$($Ports.Olv)",
-        "--proactive-minutes", "$ProactiveMinutes")
-}
-
 # 起動を待つ。どれかが起動しなければ、見るべきログの名前を出して止める
 $PartWaits = @{
     brain = @(@("Ollama", $Ports.Ollama, 60, "ollama"), @("頭脳の中継", $Ports.BrainProxy, 60, "brain-proxy"))
     voice = @(@("AivisSpeech Engine（初回は数分かかります）", $Ports.Aivis, 900, "aivisspeech"), @("声の中継", $Ports.TtsBridge, 60, "tts-bridge"))
-    olv   = @(,@("Open-LLM-VTuber（初回は数分かかります）", $Ports.Olv, 1200, "open-llm-vtuber"))
 }
-function Wait-Parts([string[]]$Groups = @("brain", "voice", "olv")) {
+function Wait-Parts([string[]]$Groups) {
     foreach ($g in $Groups) {
         foreach ($w in $PartWaits[$g]) {
             if (-not (Wait-Port $w[1] $w[2] $w[0])) { throw "$($w[0]) が起動しませんでした（.\maid.bat logs $($w[3])）。" }
@@ -270,22 +259,21 @@ function Wait-Parts([string[]]$Groups = @("brain", "voice", "olv")) {
     }
 }
 
-# 終わるまで待つ（アプリを閉じる・Open-LLM-VTuber が止まる・Ctrl+C）。終わったら記憶をまとめて全部止める。
+# 終わるまで待つ（アプリを閉じる・Ctrl+C）。終わったら記憶をまとめて全部止める。
 # Ctrl+C はこのウィンドウの部品全部に届いてしまう（頭脳が先に止まって記憶をまとめられない）。
 # なので待っている間は Ctrl+C をキー入力として受け取り、記憶をまとめてから自分で部品を止める
-function Wait-Quit($App, [bool]$WatchOlv) {
+function Wait-Quit($App) {
     $ctrlC = $false
     try { [Console]::TreatControlCAsInput = $true; $ctrlC = $true } catch {}
     try {
-        while (-not ($App -and $App.HasExited) -and -not ($WatchOlv -and -not (Test-Port $Ports.Olv))) {
+        while (-not $App.HasExited) {
             if ($ctrlC -and [Console]::KeyAvailable) {
                 $k = [Console]::ReadKey($true)
                 if ($k.Key -eq [ConsoleKey]::C -and ($k.Modifiers -band [ConsoleModifiers]::Control)) { break }
             }
             Start-Sleep -Milliseconds 300
         }
-        if ($App -and $App.HasExited) { Say "アプリを終了しました。" Gray }
-        elseif ($WatchOlv -and -not (Test-Port $Ports.Olv)) { Say "Open-LLM-VTuber が終了しました。" Yellow }
+        if ($App.HasExited) { Say "アプリを終了しました。" Gray }
     } finally {
         if ($ctrlC) { try { [Console]::TreatControlCAsInput = $false } catch {} }   # まとめの途中でもう一度 Ctrl+C なら全部止まる
         Save-Memory
@@ -294,66 +282,24 @@ function Wait-Quit($App, [bool]$WatchOlv) {
     }
 }
 
-# 日本語の音声認識モデル (ReazonSpeech, sherpa-onnx 版) を取ってくる（初回だけ）
-# 3D 表示用のライブラリ（初回だけ。数 MB）
-function Install-VrmLibs {
-    if (-not $Vrm -or (Test-Path "$($P.Olv)\frontend\maid-vrm\lib\three-vrm.module.min.js")) { return }
-    Say "  3D 表示用のライブラリをダウンロードします（初回だけ）" Cyan
-    $files = @()
-    foreach ($name in @("three", "three-vrm")) {
-        $out = "$($P.Downloads)\$(Split-Path $VrmLibs[$name] -Leaf)"
-        Get-File $VrmLibs[$name] $out
-        $files += $out
-    }
-    if (-not (Invoke-OlvPatch (@("extract-vrm-libs") + $files))) { Say "  3D 表示用のライブラリを展開できませんでした（Live2D のまま起動します）" Yellow }
-}
-
-function Install-ReazonSpeech {
-    if (Test-Path "$($P.Olv)\models\$ReazonName\encoder-epoch-99-avg-1.int8.onnx") { return }
-    Say "  日本語の音声認識モデル (ReazonSpeech) をダウンロードします（約 700MB、初回だけ）" Cyan
-    $archive = "$($P.Downloads)\$ReazonName.tar.bz2"
-    Get-File "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$ReazonName.tar.bz2" $archive
-    if (-not (Invoke-OlvPatch @("extract-asr", $archive))) { throw "音声認識モデルの展開に失敗しました。" }
-    Remove-Item -Force $archive -ErrorAction SilentlyContinue   # 使うのは展開したものだけ
-}
-
-function Install-SileroVad {
-    if (Test-Path $P.SileroVad) { return }
-    Get-File "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" $P.SileroVad
-}
-
-
-# ゲート経由で本体につながり、最初のメッセージが返ってくるか確かめる
-function Test-Gate {
-    try {
-        $ws = New-Object System.Net.WebSockets.ClientWebSocket
-        $cts = New-Object System.Threading.CancellationTokenSource 10000
-        $ws.ConnectAsync([Uri]"ws://127.0.0.1:$($Ports.Gate)/client-ws", $cts.Token).Wait()
-        $buf = New-Object byte[] 65536
-        $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buf), $cts.Token).Result
-        try { $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "", [Threading.CancellationToken]::None).Wait(2000) | Out-Null } catch {}
-        return ($r.Count -gt 0)
-    } catch { return $false }
-}
-
 # ------------------------------------------------------------------ setup
 function Invoke-Setup {
     New-Item -ItemType Directory -Force -Path $Rt, $P.Downloads | Out-Null
     $dl = $P.Downloads
 
-    Say "[1/6] uv（Python とライブラリの管理。Python も runtime\ に入れる）" Cyan
+    Say "[1/5] uv（Python とライブラリの管理。Python も runtime\ に入れる）" Cyan
     if (-not (Test-Path $P.Uv)) {
         Get-File "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip" "$dl\uv.zip"
         Expand-Zip "$dl\uv.zip" "$Rt\uv"
     }
 
-    Say "[2/6] Ollama（頭脳を動かす）" Cyan
+    Say "[2/5] Ollama（頭脳を動かす）" Cyan
     if (-not (Test-Path $P.Ollama)) {
         Get-File "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip" "$dl\ollama.zip"
         Expand-Zip "$dl\ollama.zip" "$Rt\ollama"
     }
 
-    Say "[3/6] AivisSpeech Engine（声）" Cyan
+    Say "[3/5] AivisSpeech Engine（声）" Cyan
     if (-not (Find-AivisExe)) {
         Get-File "https://www.7-zip.org/a/7zr.exe" $P.SevenZip   # 7z 展開用（公式の単体版。インストール不要）
         $rel = Invoke-RestMethod "https://api.github.com/repos/Aivis-Project/AivisSpeech-Engine/releases/latest"
@@ -368,129 +314,70 @@ function Invoke-Setup {
         Move-Item $tmp $P.AivisDir
     }
 
-    Say "[4/6] Open-LLM-VTuber $OlvTag（基盤）" Cyan
-    if (-not (Test-Path "$($P.Olv)\run_server.py")) {
-        Get-File "https://github.com/Open-LLM-VTuber/Open-LLM-VTuber/archive/refs/tags/$OlvTag.zip" "$dl\olv-$OlvTag.zip"
-        Expand-Zip "$dl\olv-$OlvTag.zip" $P.Olv
-    }
-    if (-not (Test-Path "$($P.Olv)\frontend\index.html")) {
-        Get-File "https://github.com/Open-LLM-VTuber/Open-LLM-VTuber-Web/archive/$OlvFrontendCommit.zip" "$dl\olv-frontend.zip"
-        Expand-Zip "$dl\olv-frontend.zip" "$($P.Olv)\frontend"
-    }
-    if (-not (Test-Path "$($P.Olv)\conf.yaml")) {
-        Copy-Item "$Root\config\open-llm-vtuber\conf.yaml" "$($P.Olv)\conf.yaml"
-        Say "  conf.yaml をコピーしました: $($P.Olv)\conf.yaml"
-    }
-
-    Say "[5/6] ライブラリ（数 GB。初回は時間がかかります）" Cyan
-    Push-Location $P.Olv
-    try { & $P.Uv sync; if ($LASTEXITCODE -ne 0) { throw "uv sync に失敗しました。" } } finally { Pop-Location }
+    Say "[4/5] ライブラリと音声認識のモデル" Cyan
     Install-MaidVenv
+    Install-ReazonSpeech
+    Install-SileroVad
 
-    Say "[6/6] 頭脳のモデル ($Model)" Cyan
+    Say "[5/5] 頭脳のモデル ($Model$(if ($EmbedModel) { " と $EmbedModel" }))" Cyan
     Start-OllamaServer
     if (-not (Wait-Port $Ports.Ollama 60 "Ollama")) { throw "Ollama が起動しませんでした（.\maid.bat logs ollama）。" }
-    # 大きいので途中で通信が切れることがある。ollama pull は続きから再開できるので数回やり直す
-    for ($i = 1; $i -le 5; $i++) {
-        & $P.Ollama pull $Model
-        if ($LASTEXITCODE -eq 0) { break }
-        if ($i -eq 5) { throw "モデル $Model の取得に失敗しました。通信を確認して、もう一度 setup.bat を実行してください（続きから再開します）。" }
-        Say "  取得が途中で止まりました。やり直します ($i/5)..." Yellow
-        Start-Sleep -Seconds 3
+    foreach ($m in @($Model, $EmbedModel) | Where-Object { $_ }) {
+        # 大きいので途中で通信が切れることがある。ollama pull は続きから再開できるので数回やり直す
+        for ($i = 1; $i -le 5; $i++) {
+            & $P.Ollama pull $m
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq 5) { throw "モデル $m の取得に失敗しました。通信を確認して、もう一度 setup.bat を実行してください（続きから再開します）。" }
+            Say "  取得が途中で止まりました。やり直します ($i/5)..." Yellow
+            Start-Sleep -Seconds 3
+        }
     }
-
+    Stop-Maid | Out-Null
+    if (Test-Path $P.Old) { Say "`n前に使っていた Open-LLM-VTuber（数 GB）は、もう使いません。.\maid.bat clean で消せます。" Yellow }
     Say "`nセットアップ完了。次は start.bat" Green
 }
 
-# ------------------------------------------------------------------ start
-function Invoke-Start {
-    if (-not (Test-Path $P.OlvPy)) { throw "Open-LLM-VTuber がありません。先に setup.bat を実行してください。" }
+# ------------------------------------------------------------------ run（すぐ起動する）
+function Invoke-Run {
     $sw = [Diagnostics.Stopwatch]::StartNew()
+    if (-not (Test-Path $P.Uv)) { throw "先に setup.bat を実行してください。" }
     Install-MaidVenv
-    Install-ReazonSpeech
-    Install-VrmLibs
-    Say "部品を起動しています（頭脳・声・Discord ゲート）" Cyan
-    Start-Parts
-
-    # 画面がつなぐ先: Discord ゲートが起動していればゲート、だめなら本体に直結
-    $ws = "ws://127.0.0.1:$($Ports.Olv)/client-ws"
-    if (Wait-Port $Ports.Gate 20) {
-        $ws = "ws://127.0.0.1:$($Ports.Gate)/client-ws"
-    } else {
-        Say "  Discord ゲートが起動しないので、使わずに直結します（.\maid.bat logs discord-gate）" Yellow
-        if ($Desktop) { Say "  ゲートが無いとデスクトップのキャラは声を受け取れないので、キャラは画面の中に出します" Yellow; $Desktop = $false }
-    }
-    $desktopArg = if ($Desktop) { "on" } else { "off" }
-    if (-not (Invoke-OlvPatch @("prepare", "--ws-url", $ws, "--base-url", $OlvUrl, "--silence-ms", "$SilenceMs", "--vrm=$Vrm", "--vrm-view=$VrmView", "--mic=$Mic", "--desktop=$desktopArg"))) {
-        Say "  画面と conf.yaml の準備に失敗しました（今の設定のまま起動します）" Yellow
-    }
-    if (-not (Test-Port $Ports.Olv)) { Start-Part "open-llm-vtuber" $P.OlvPy @("run_server.py") $P.Olv }
-    Wait-Parts
-
-    Say ("  頭脳: $Model / 声: $Voice / 検索: $Search （起動 {0:N0} 秒）" -f $sw.Elapsed.TotalSeconds) Gray
-    $t = [DateTimeOffset]::Now.ToUnixTimeSeconds()   # ?t= は古いページを使い回させないため
-    $app = $null
-    if ($UseApp) {
-        # maid のアプリ（WebView2。Windows に標準）。画面の設定やマイクの許可は runtime\webview に保存する
-        $a = @("`"$Root\app\maid_app.py`"", "full", "--chat-url", "$OlvUrl/?t=$t", "--storage", "`"$Rt\webview`"")
-        if ($Desktop) { $a += @("--character-url", "$OlvUrl/maid-vrm/character.html?t=$t") }
-        if ($CharacterOnTop) { $a += "--on-top" }
-        if (-not $CharacterClickThrough) { $a += "--no-click-through" }
-        $app = Start-Part "app" $P.MaidPy $a -PassThru
-        Say "`n準備完了。画面右下のタスクトレイのアイコンから、チャットを開く・キャラを隠す・終了ができます。" Green
-        Say "（ログ: .\maid.bat logs <名前>。このウィンドウで Ctrl+C でも全部止まります）" Green
-    } else {
-        # Windows 標準の Edge をアプリ風のウィンドウで開く（インストール不要）
-        Start-Process "msedge.exe" "--app=$OlvUrl/?t=$t"
-        Say "`n準備完了。画面を閉じても裏の部品は動き続けます。ログ: .\maid.bat logs <名前>" Green
-        Say "全部止めるときは、このウィンドウで Ctrl+C（または .\maid.bat stop）。" Green
-    }
-    Wait-Quit $app $true
-}
-
-# ------------------------------------------------------------------ chat（チャットだけの版）
-function Invoke-Chat {
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    Install-MaidVenv
-    $asrDir = "$($P.Olv)\models\$ReazonName"
     $listen = $false
-    if ($Mic -eq "on") {
-        # 声で話しかける: 音声認識はフル版と同じ ReazonSpeech を使う
+    if ($Mic) {
         try {
-            if (Test-Path $P.OlvPy) { Install-ReazonSpeech }
+            Install-ReazonSpeech
             Install-SileroVad
-            $listen = Test-Path "$asrDir\tokens.txt"
-        } catch { Say "  音声認識を準備できませんでした: $($_.Exception.Message)" Yellow }
-        if (-not $listen) { Say "  音声認識のモデルが無いので、声では話しかけられません（先に setup.bat を実行してください）" Yellow }
+            $listen = $true
+        } catch { Say "  音声認識を準備できませんでした。今回は文字だけで話します: $($_.Exception.Message)" Yellow }
     }
     Say "部品を起動しています（頭脳$(if ($VoiceReply) { '・声' })）" Cyan
     Start-Brain
     $groups = @("brain")
     if ($VoiceReply) { Start-Voice; $groups += "voice" }
     Wait-Parts $groups
-    $a = @("`"$Root\app\maid_app.py`"", "chat", "--storage", "`"$Rt\webview`"", "--data", "`"$DataDir`"",
-        "--conf", "`"$($P.Olv)\conf.yaml`"", "--proxy", "http://127.0.0.1:$($Ports.BrainProxy)", "--proactive-minutes", "$ProactiveMinutes")
+    # 画面の設定やマイクの許可は runtime\webview に保存する
+    $a = @("`"$Root\app\maid_app.py`"", "run", "--storage", "`"$Rt\webview`"", "--data", "`"$DataDir`"",
+        "--proxy", "http://127.0.0.1:$($Ports.BrainProxy)", "--proactive-minutes", "$ProactiveMinutes")
     if ($VoiceReply) { $a += @("--tts", "http://127.0.0.1:$($Ports.TtsBridge)", "--voice") }
-    if ($listen) { $a += @("--asr-dir", "`"$asrDir`"", "--vad", "`"$($P.SileroVad)`"", "--silence-ms", "$SilenceMs", "--mic") }
+    if ($listen) { $a += @("--asr-dir", "`"$($P.Asr)`"", "--vad", "`"$($P.SileroVad)`"", "--silence-ms", "$SilenceMs", "--mic") }
     $app = Start-Part "app" $P.MaidPy $a -PassThru
     Say ("  頭脳: $Model / 検索: $Search / 声: $(if ($VoiceReply) { $Voice } else { 'なし' }) / マイク: $(if ($listen) { 'あり' } else { 'なし' }) （起動 {0:N0} 秒）" -f $sw.Elapsed.TotalSeconds) Gray
-    Say "`n準備完了。チャットのウィンドウを閉じると、記憶をまとめて全部止まります（このウィンドウで Ctrl+C でも）。" Green
-    Wait-Quit $app $false
+    Say "`n準備完了。ウィンドウを閉じると、記憶をまとめて全部止まります（このウィンドウで Ctrl+C でも）。" Green
+    Wait-Quit $app
 }
 
-# ------------------------------------------------------------------ launch（起動の画面）
-function Invoke-Launch {
+# ------------------------------------------------------------------ start（起動の画面を出してから起動する）
+function Invoke-Start {
+    if (-not (Test-Path $P.Uv)) { throw "先に setup.bat を実行してください。" }
     Install-MaidVenv
-    & $P.MaidPy "$Root\app\maid_app.py" launcher --storage "$Rt\webview" --data "$DataDir" --conf "$($P.Olv)\conf.yaml" | Out-Host
-    $code = $LASTEXITCODE
+    & $P.MaidPy "$Root\app\maid_app.py" launcher --storage "$Rt\webview" --data "$DataDir" | Out-Host
     # 選んだ内容は maid.settings.json に書かれたので、このスクリプトを読み直して起動する
-    if ($code -eq 10) { & $PSCommandPath chat }
-    elseif ($code -eq 11) { & $PSCommandPath start }
+    if ($LASTEXITCODE -eq 10) { & $PSCommandPath run }
     else { Say "やめました" Gray }
 }
 
 # ------------------------------------------------------------------ doctor
-# 起動中の部品を、頭脳 → 声 → 本体 の順に実際に動かしてみて、どこで止まっているかを表示する
+# 起動中の部品を、頭脳 → 声 の順に実際に動かしてみて、どこで止まっているかを表示する
 function Invoke-Doctor {
     function Res([string]$name, [bool]$good, [string]$detail) {
         $mark = if ($good) { "OK " } else { "NG " }
@@ -509,8 +396,10 @@ function Invoke-Doctor {
     if ($up) {
         try {
             $names = Get-OllamaModels
-            $has = Test-ModelIn $names
-            Res "モデル" $has $(if ($has) { $Model } else { "$Model が取得されていません（取得済み: $($names -join ', ')）→ .\setup.bat" })
+            foreach ($m in @($Model, $EmbedModel) | Where-Object { $_ }) {
+                $has = Test-ModelIn $names $m
+                Res "モデル" $has $(if ($has) { $m } else { "$m が取得されていません（取得済み: $($names -join ', ')）→ .\setup.bat" })
+            }
         } catch { Res "モデル" $false "一覧を取得できません: $($_.Exception.Message)" }
     }
     $up = Test-Port $Ports.BrainProxy
@@ -524,7 +413,7 @@ function Invoke-Doctor {
         } catch { Res "頭脳の返事" $false "失敗: $($_.Exception.Message)" }
     }
 
-    Say "声" Cyan
+    Say "声（声で返事するときだけ使う）" Cyan
     $up = Test-Port $Ports.Aivis
     Res "AivisSpeech ($($Ports.Aivis))" $up $(if ($up) { "起動中" } else { Down "aivisspeech" })
     $up = Test-Port $Ports.TtsBridge
@@ -540,37 +429,27 @@ function Invoke-Doctor {
         }
     }
 
-    Say "本体と画面" Cyan
-    $up = Test-Port $Ports.Olv
-    Res "Open-LLM-VTuber ($($Ports.Olv))" $up $(if ($up) { "起動中" } else { Down "open-llm-vtuber" })
-    if ($up) {
-        try { Invoke-WebRequest -UseBasicParsing "$OlvUrl/maid-defaults.js" | Out-Null; Res "画面の初期設定" $true "配信されています" }
-        catch { Res "画面の初期設定" $false "maid-defaults.js が配信されていません" }
-    }
-    $g = (Test-Port $Ports.Gate) -and (Test-Gate)
-    Res "Discord ゲート ($($Ports.Gate))" $g $(if ($g) { "本体まで通じています" } else { "使えません（画面は本体に直結されます）" })
-    $log = Get-ChildItem "$($P.Olv)\logs\debug_*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
-    if ($log) { Say "`n本体のログ: $($log.FullName)" Gray }
+    Say "耳（マイクで聞くときだけ使う）" Cyan
+    $has = (Test-Path "$($P.Asr)\tokens.txt") -and (Test-Path $P.SileroVad)
+    Res "音声認識のモデル" $has $(if ($has) { $P.Asr } else { "ありません → .\setup.bat" })
+    Say "`n聞こえた文や、アプリのエラーは .\maid.bat logs app で見られます。" Gray
 }
 
 # ------------------------------------------------------------------ clean / logs
 function Invoke-Clean {
+    if (Test-Port $Ports.BrainProxy) { throw "動いている間は消せないファイルがあります。先に .\maid.bat stop を実行してください。" }
     if ($Memory) {
-        if (Test-Port $Ports.BrainProxy) { throw "先に .\maid.bat stop を実行してください。" }
         Say "覚えたこと（data\PROFILE.md / NOW.md / 前の会話の要約）を消して、次に起動したときに会話の記録（data\log）から覚え直させます。" Yellow
         if ((Read-Host "よければ yes と入力") -ne "yes") { Say "やめました" Gray; return }
         foreach ($f in @("PROFILE.md", "NOW.md", "USER.md", "MEMORY.md", "memory.db", "state.json")) { Remove-Item -Force "$DataDir\$f" -ErrorAction SilentlyContinue }
         Say "消しました。起動して 1 分ほどすると、裏で覚え直しが始まります（.\maid.bat logs brain-proxy で様子が見られます）。" Green
         return
     }
-    if (Test-Port $Ports.Olv) { throw "動いている間は消せないファイルがあります。先に .\maid.bat stop を実行してください。" }
-    # ログ・一時ファイル・ダウンロード済みのファイル・前に使っていた音声認識モデル (SenseVoice)
-    $oldAsr = @(Get-ChildItem "$($P.Olv)\models\sherpa-onnx-sense-voice-*" -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-    $targets = @($P.Logs, $P.Downloads, "$($P.Olv)\logs", "$($P.Olv)\cache") + $oldAsr
+    $targets = @($P.Logs, $P.Downloads)
     if ($History) {
-        Say "会話の履歴（$($P.Olv)\chat_history）も全部消します。元に戻せません。" Yellow
+        Say "会話の画面の履歴（data\chat.json）を消します。覚えたことは消えません。" Yellow
         if ((Read-Host "消してよければ yes と入力") -ne "yes") { Say "やめました" Gray; return }
-        $targets += "$($P.Olv)\chat_history"
+        $targets += "$DataDir\chat.json"
     }
     $bytes = 0
     foreach ($t in $targets) {
@@ -580,15 +459,26 @@ function Invoke-Clean {
             try { Remove-Item -Force $_.FullName -ErrorAction Stop; $bytes += $len } catch {}
         }
     }
-    foreach ($d in $oldAsr) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
-    Remove-Item -Force "$($P.Olv)\conf.yaml.backup" -ErrorAction SilentlyContinue   # Open-LLM-VTuber が起動のたびに作る控え
     Say ("消しました（{0:N1} MB）" -f ($bytes / 1MB)) Green
+
+    # 前に使っていた Open-LLM-VTuber（本体・ライブラリ・画面。数 GB）
+    if (Test-Path $P.Old) {
+        Say "前に使っていた Open-LLM-VTuber（$($P.Old)）は、もう使いません。" Yellow
+        if ((Read-Host "消してよければ yes と入力") -eq "yes") {
+            # キャラの設定と音声認識のモデルを、先に引っ越す
+            if (Test-Path $P.MaidPy) { & $P.MaidPy "$Root\app\maid_app.py" character | Out-Null }
+            try { Install-ReazonSpeech } catch { Say "  音声認識のモデルを引っ越せませんでした（setup.bat でダウンロードし直せます）" Yellow }
+            if (-not (Test-Path "$Root\character.yaml")) { Say "キャラの設定を引っ越せなかったので、消すのをやめました。" Yellow; return }
+            Remove-Item -Recurse -Force $P.Old
+            Say "消しました。" Green
+        }
+    }
 
     # 使っていない頭脳のモデル（試したモデルなど。1 つ数 GB）
     if (Test-Path $P.Ollama) {
         Start-OllamaServer
         if (-not (Wait-Port $Ports.Ollama 60 "Ollama")) { throw "Ollama が起動しませんでした（.\maid.bat logs ollama）。" }
-        $unused = @(Get-OllamaModels | Where-Object { $_ -ne $Model -and $_ -ne "$($Model):latest" })
+        $unused = @(Get-OllamaModels | Where-Object { -not (Test-ModelIn @($_) $Model) -and -not ($EmbedModel -and (Test-ModelIn @($_) $EmbedModel)) })
         if ($unused.Count -gt 0) {
             Say "使っていない頭脳のモデル: $($unused -join ', ')" Yellow
             if ((Read-Host "消してよければ yes と入力") -eq "yes") {
@@ -597,7 +487,7 @@ function Invoke-Clean {
         }
         Stop-Maid | Out-Null
     }
-    if (-not $History) { Say "会話の履歴も消すときは .\maid.bat clean -History" Gray }
+    if (-not $History) { Say "会話の画面の履歴も消すときは .\maid.bat clean -History" Gray }
 }
 
 function Invoke-Logs {
@@ -605,7 +495,6 @@ function Invoke-Logs {
     if (-not $Arg) {
         Say "使い方: maid.bat logs <名前>   （名前: $($names -join ', ')）" Gray
         Say "コピーしたいときはメモ帳で開く: notepad runtime\logs\<名前>.log" Gray
-        Say "本体の詳しいログ: $($P.Olv)\logs\" Gray
         return
     }
     foreach ($f in @("$($P.Logs)\$Arg.log", "$($P.Logs)\$Arg.err.log")) {
@@ -619,14 +508,13 @@ function Invoke-Logs {
 # ------------------------------------------------------------------ コマンド
 switch ($Command) {
     "setup" { Invoke-Setup }
-    "launch" { Invoke-Launch }
     "start" { Invoke-Start }
-    "chat" { Invoke-Chat }
+    "run" { Invoke-Run }
     "stop" { Save-Memory; Say "止めました ($(Stop-Maid) 個)" Green }
     "doctor" { Invoke-Doctor }
     "logs" { Invoke-Logs }
     "clean" { Invoke-Clean }
     default {
-        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 5 -First 9 | ForEach-Object { $_ -replace "^#\s?", "" }
+        Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 5 -First 8 | ForEach-Object { $_ -replace "^#\s?", "" }
     }
 }

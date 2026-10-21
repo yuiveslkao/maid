@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>maid</title>
-<!-- maid: チャットだけの版の画面（app/maid_app.py chat が開く）。頭脳とのやりとりは app/chat.py が行う -->
+<!-- maid: 会話の画面（app/maid_app.py run が開く）。頭脳とのやりとりは app/chat.py が行う -->
 <style>
   :root {
     --bg: #fff7fa; --panel: #ffffff; --line: #f3d3df; --accent: #f27aa6; --accent-dark: #d95a8a;
@@ -33,6 +33,17 @@
   .sources { display: block; margin-top: 6px; font-size: 12px; color: var(--sub); }
   .sources a { color: var(--accent-dark); margin-right: 8px; cursor: pointer; text-decoration: underline; }
   footer { display: flex; gap: 8px; padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--line); }
+  #attach { display: none; gap: 8px; padding: 8px 14px 0; background: var(--panel); border-top: 1px solid var(--line); }
+  #attach.on { display: flex; }
+  #attach + footer { border-top: none; }
+  .thumb { position: relative; }
+  .thumb img, .bubble img { height: 72px; border-radius: 8px; border: 1px solid var(--line); display: block; }
+  .bubble img { height: 120px; max-width: 100%; object-fit: contain; margin-top: 6px; }
+  .thumb button { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; border: none;
+    background: var(--sub); color: #fff; font-size: 12px; line-height: 20px; padding: 0; cursor: pointer; }
+  .tag { display: block; margin-top: 4px; font-size: 12px; color: var(--sub); }
+  footer button.look { background: var(--panel); color: var(--text); border: 1px solid var(--line); font-weight: normal; padding: 0 12px; }
+  body.drop #log { outline: 3px dashed var(--accent); outline-offset: -6px; }
   textarea { flex: 1; resize: none; height: 44px; max-height: 140px; padding: 10px 12px; border-radius: 12px;
     border: 1px solid var(--line); font: inherit; color: var(--text); background: var(--bg); outline: none; }
   textarea:focus { border-color: var(--accent); }
@@ -52,8 +63,10 @@
   <button id="clearBtn" title="画面の会話を消す（覚えたことは消えません）">会話を消す</button>
 </header>
 <div id="log"></div>
+<div id="attach"></div>
 <footer>
-  <textarea id="input" placeholder="メッセージ（Enter で送る / Shift+Enter で改行。マイクがオンなら話しかけても OK）"></textarea>
+  <button id="lookBtn" class="look" title="今の画面を撮って見せる（このウィンドウは写りません）">画面を見せる</button>
+  <textarea id="input" placeholder="メッセージ（Enter で送る。画像は貼り付け・ドラッグでも OK）"></textarea>
   <button id="sendBtn">送る</button>
 </footer>
 <script>
@@ -63,7 +76,8 @@
   var micBtn = document.getElementById("micBtn"), micNote = document.getElementById("micNote"), mic = false;
   var MIC_NOTES = { loading: "音声認識を準備中…", discord: "Discord 通話中は聞きません", error: "マイクを使えません" };
   var info = { name: "", human: "", icons: {} }, voice = false, current = null, currentText = "", busy = false;
-  var audioQueue = [], playing = null;
+  var audioQueue = [], playing = null, attached = [];
+  var attachEl = document.getElementById("attach"), lookBtn = document.getElementById("lookBtn");
 
   function iconEl(kind) {
     var src = info.icons[kind];
@@ -95,7 +109,15 @@
     el.innerHTML = html;
   }
 
-  function addRow(kind, text) {
+  function addImages(bubble, images) {
+    (images || []).forEach(function (src) {
+      var img = document.createElement("img");
+      img.src = src;
+      bubble.appendChild(img);
+    });
+  }
+
+  function addRow(kind, text, images, imageCount) {
     var empty = log.querySelector(".empty");
     if (empty) empty.remove();
     var row = document.createElement("div");
@@ -104,6 +126,13 @@
     var bubble = document.createElement("div");
     bubble.className = "bubble";
     render(bubble, text || "");
+    addImages(bubble, images);
+    if (!images && imageCount) {
+      var tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "（画像を " + imageCount + " 枚見せた）";
+      bubble.appendChild(tag);
+    }
     row.appendChild(bubble);
     log.appendChild(row);
     log.scrollTop = log.scrollHeight;
@@ -153,14 +182,14 @@
     },
     audio: function (b64) { audioQueue.push(b64); playNext(); },
     // 声で話しかけられた（返事の途中なら、そこで打ち切って次の返事へ）
-    heard: function (t) {
+    heard: function (t, images) {
       stopAudio();
       if (current) {
         current.classList.remove("thinking");
         if (!currentText) current.parentNode.remove();
         current = null;
       }
-      addRow("user", t);
+      addRow("user", t, images && images.length ? images : null);
       startReply();
     },
     micState: function (st) { showMic(st); }
@@ -171,6 +200,29 @@
     micNote.textContent = mic ? (MIC_NOTES[st] || "") : "";
   }
 
+  // 次に送るメッセージに付ける画像
+  function showAttached() {
+    attachEl.innerHTML = "";
+    attachEl.className = attached.length ? "on" : "";
+    attached.forEach(function (src, i) {
+      var box = document.createElement("div");
+      box.className = "thumb";
+      box.innerHTML = '<img><button title="外す">×</button>';
+      box.querySelector("img").src = src;
+      box.querySelector("button").onclick = function () { attached.splice(i, 1); showAttached(); };
+      attachEl.appendChild(box);
+    });
+  }
+
+  function attachFile(file) {
+    if (!file || !/^image\//.test(file.type)) return;
+    var r = new FileReader();
+    r.onload = function () {
+      window.pywebview.api.shrink(r.result).then(function (src) { attached.push(src); showAttached(); });
+    };
+    r.readAsDataURL(file);
+  }
+
   function send() {
     if (busy) {  // 止める
       stopAudio();
@@ -178,13 +230,32 @@
       return;
     }
     var text = input.value.trim();
-    if (!text) return;
+    if (!text && !attached.length) return;
+    var images = attached;
+    attached = [];
+    showAttached();
     input.value = "";
     stopAudio();
-    addRow("user", text);
+    addRow("user", text, images.length ? images : null);
     startReply();
-    window.pywebview.api.send(text);
+    window.pywebview.api.send(text, images);
   }
+
+  lookBtn.onclick = function () {
+    lookBtn.disabled = true;
+    window.pywebview.api.capture().then(function (src) { attached.push(src); showAttached(); input.focus(); })
+      .finally(function () { lookBtn.disabled = false; });
+  };
+  input.addEventListener("paste", function (e) {
+    Array.prototype.forEach.call((e.clipboardData && e.clipboardData.files) || [], attachFile);
+  });
+  document.addEventListener("dragover", function (e) { e.preventDefault(); document.body.classList.add("drop"); });
+  document.addEventListener("dragleave", function (e) { if (!e.relatedTarget) document.body.classList.remove("drop"); });
+  document.addEventListener("drop", function (e) {
+    e.preventDefault();
+    document.body.classList.remove("drop");
+    Array.prototype.forEach.call(e.dataTransfer.files || [], attachFile);
+  });
 
   sendBtn.onclick = send;
   input.addEventListener("keydown", function (e) {
@@ -225,7 +296,7 @@
       micBtn.style.display = r.micAvailable ? "" : "none";
       showMic(r.micState);
       if (!r.history.length) log.innerHTML = '<div class="empty">話しかけてみてね</div>';
-      r.history.forEach(function (m) { addRow(m.role === "user" ? "user" : "character", m.content); });
+      r.history.forEach(function (m) { addRow(m.role === "user" ? "user" : "character", m.content, null, m.images); });
       input.focus();
     });
   });

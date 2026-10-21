@@ -1,12 +1,12 @@
-"""チャットだけの版の中身（画面は app/ui/chat.html）。
+"""会話の中身（画面は app/ui/chat.html）。
 
-Open-LLM-VTuber を使わずに、頭脳の中継（services/llm_proxy.py）に直接話しかける。
-検索・URL を読む・記憶・今の日時は、頭脳の中継がやるので、ここでは何もしなくてよい。
+頭脳の中継（services/llm_proxy.py）に話しかける。検索・URL を読む・記憶・今の日時は、頭脳の中継がやるので、
+ここでは何もしなくてよい。
 
-- キャラの設定（名前・persona_prompt）は Open-LLM-VTuber の conf.yaml から読む（フル版と同じキャラになる）
-- 会話は data\\chat.json に残す（次に開いたとき続きから見える）
+- キャラの設定（名前・性格）は character.yaml（app/common.py）
+- 会話は data\\chat.json に残す（次に開いたとき続きから見える）。見せた画像は残さず「何枚見せたか」だけ残す
 - 声で返事するときは、文ごとに声の中継（services/tts_bridge.py）に読ませ、画面で順に鳴らす
-- しばらく話さなかったら、キャラから話しかける（フル版と同じく、話題は頭脳の中継が記憶から選ぶ）
+- しばらく話さなかったら、キャラから話しかける（話題は頭脳の中継が記憶から選ぶ）
 """
 
 from __future__ import annotations
@@ -25,26 +25,12 @@ from typing import Callable
 log = logging.getLogger("chat")
 
 HISTORY_KEEP = 40          # 頭脳に渡す・保存する発言の数
+# キャラから話しかけさせる合図（頭脳の中継がこれを見て、記憶から話題を選んだ指示に置き換える）
 PROACTIVE_MARK = "Please say something that would be engaging and appropriate for the current context."
 THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
 SENTENCE_END = re.compile(r"(?<=[。！？!?♪〜…])|\n")
 UNSPOKEN = [re.compile(p, re.S) for p in (r"<think>.*?</think>", r"<think>.*$", r"\[[^\]]*\]", r"\([^)]*\)",
                                           r"（[^）]*）", r"\*[^*]*\*")]
-
-
-def load_character(conf: Path | None) -> dict:
-    """conf.yaml からキャラの名前・相手の名前・persona_prompt を読む。無ければ簡単な既定値。"""
-    out = {"name": "メイド", "human": "ご主人様", "persona": "あなたは親しみやすいアシスタントです。日本語の話し言葉で、短く答えてください。"}
-    if conf and conf.exists():
-        try:
-            import yaml
-
-            cc = (yaml.safe_load(conf.read_text(encoding="utf-8")) or {}).get("character_config", {})
-            out.update({k: str(cc[key]) for k, key in (("name", "character_name"), ("human", "human_name"), ("persona", "persona_prompt"))
-                        if cc.get(key)})
-        except Exception as e:
-            log.warning("キャラの設定を読めませんでした (%s): %s", conf, e)
-    return out
 
 
 def spoken(text: str) -> str:
@@ -126,17 +112,31 @@ class ChatSession:
             self.history_path.parent.mkdir(parents=True, exist_ok=True)
             self.history_path.write_text(json.dumps(self.history[-HISTORY_KEEP:], ensure_ascii=False, indent=1), encoding="utf-8")
 
-    def send(self, text: str, on_chunk: Callable[[str], None], proactive: bool = False) -> str:
+    @staticmethod
+    def _for_brain(m: dict) -> dict:
+        """記録した発言を、頭脳に渡す形にする（見せた画像は残していないので、見せたことだけ伝える）。"""
+        if m.get("images"):
+            return {"role": m["role"], "content": f"{m['content']}\n（このとき画像を {m['images']} 枚見せた）".strip()}
+        return {"role": m["role"], "content": m["content"]}
+
+    def send(self, text: str, on_chunk: Callable[[str], None], proactive: bool = False, images: list[str] | None = None) -> str:
         """頭脳の中継に話しかけ、返事を少しずつ on_chunk に渡す。戻り値は返事の全文。
+        images は見せる画像（data URL）。
 
         キャラから話しかけるとき（proactive）は、話題は頭脳の中継が選ぶ。話しかけた内容は、相手が返事をしたときに
-        頭脳の中継が足すので、ここの会話の記録には入れない（フル版と同じ）。"""
+        頭脳の中継が足すので、ここの会話の記録には入れない。"""
         with self.lock:
             self.busy = True
             self.cancel.clear()
             self.last_activity = time.monotonic()
-            messages = [{"role": "system", "content": self.character["persona"]}] + self.history[-HISTORY_KEEP:]
-            messages.append({"role": "user", "content": PROACTIVE_MARK if proactive else text})
+            messages = [{"role": "system", "content": self.character["persona"]}] + [self._for_brain(m) for m in self.history[-HISTORY_KEEP:]]
+            if proactive:
+                messages.append({"role": "user", "content": PROACTIVE_MARK})
+            elif images:
+                parts = [{"type": "text", "text": text or "この画像を見て"}]
+                messages.append({"role": "user", "content": parts + [{"type": "image_url", "image_url": {"url": u}} for u in images]})
+            else:
+                messages.append({"role": "user", "content": text})
             body = json.dumps({"model": "maid", "stream": True, "messages": messages}, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(self.proxy_url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
             reply = ""
@@ -166,7 +166,10 @@ class ChatSession:
                 self.busy = False
                 self.last_activity = time.monotonic()
             if not proactive:
-                self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": reply}]
+                said = {"role": "user", "content": text}
+                if images:
+                    said["images"] = len(images)
+                self.history += [said, {"role": "assistant", "content": reply}]
                 self._save()
             return reply
 
@@ -176,12 +179,13 @@ class ChatSession:
 
 
 def proactive_loop(session: ChatSession, minutes: float, speak: Callable[[], None], idle: Callable[[], float],
-                   stop: threading.Event, away_seconds: float = 900, poll: float = 20) -> None:
-    """会話が minutes 分無く、PC を使っているときに speak() を呼ぶ（キャラから話しかける）。"""
+                   stop: threading.Event, away_seconds: float = 900, poll: float = 20,
+                   blocked: Callable[[], bool] = lambda: False) -> None:
+    """会話が minutes 分無く、PC を使っていて、Discord で通話していないときに speak() を呼ぶ（キャラから話しかける）。"""
     if minutes <= 0:
         return
     while not stop.wait(poll):
         quiet = time.monotonic() - session.last_activity
-        if not session.busy and quiet >= minutes * 60 and idle() < away_seconds:
+        if not session.busy and quiet >= minutes * 60 and idle() < away_seconds and not blocked():
             session.last_activity = time.monotonic()
             speak()

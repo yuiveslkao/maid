@@ -44,7 +44,7 @@ class WebSearchTest(unittest.TestCase):
 
     def test_sources_are_not_read_aloud(self):
         ctx = SearchContext("q", [Result("a", "https://time.is/ja/Japan", ""), Result("b", "https://ja.example.com/x", "")])
-        # Open-LLM-VTuber は <think> の中を読み上げない（[ ] だと URL の「.」で文が切られて読み上げられた）
+        # アプリは <think> の中を読み上げない（[ ] だと URL の「.」で文が切られて読み上げられた）
         self.assertEqual(web_search.sources_line(ctx), "<think>出典: https://time.is/ja/Japan / https://ja.example.com/x。</think>")
 
     def test_pdf_text(self):

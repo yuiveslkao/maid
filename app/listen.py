@@ -1,8 +1,8 @@
-"""チャットだけの版の、声で話しかける部分。
+"""声で話しかける部分。
 
 マイクの音を自分で取り（sounddevice）、話しはじめと話し終わりを見つけ（Silero VAD）、
-話し終わるごとに文字にする（ReazonSpeech。フル版と同じモデル。どちらも sherpa-onnx で CPU）。
-Discord で通話中は聞かない（フル版の Discord ゲートと同じ判定）。
+話し終わるごとに文字にする（ReazonSpeech。どちらも sherpa-onnx で CPU）。
+Discord で通話中は聞かない（services/winutil.py）。
 """
 
 from __future__ import annotations

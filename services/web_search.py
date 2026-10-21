@@ -197,8 +197,6 @@ def build_context(ctx: SearchContext, followup: bool = False) -> str:
 def sources_line(ctx: SearchContext) -> str:
     """返事の最後に付ける出典。
 
-    Open-LLM-VTuber は <think> の中を画面に「( … )」と出すだけで読み上げない。
-    [ ] で囲むやり方だと、URL の「.」で文が切られて括弧が分かれ、読み上げられてしまう。"""
+    アプリは <think> の中を読み上げず、画面に小さなリンクとして出す（app/chat.py・app/ui/chat.html）。"""
     urls = [r.url for r in ctx.results if r.url]
-    # 最後を「。」で終えないと、画面に出す最後の切れ端（URL の最後の「.」より後ろ）が落ちる
     return f"<think>出典: {' / '.join(urls)}。</think>" if urls else ""

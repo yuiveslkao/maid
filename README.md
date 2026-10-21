@@ -1,7 +1,7 @@
 # maid
 
-PC 上でいつでも音声で話せる、好みの声と性格のキャラクター兼調べものエージェント（個人用）。
-基盤は [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) v1.2.1 で、本体は改造せず外付けで拡張します。
+PC 上でいつでも文字と声で話せる、好みの声と性格のキャラクター兼調べものエージェント（個人用）。
+Windows のアプリとして動き、頭脳（LLM）・声・音声認識はすべて PC の中で動かします。
 
 - 仕様と今後の計画: [docs/SPEC.md](docs/SPEC.md)
 - セットアップと使い方: [docs/SETUP_WINDOWS.md](docs/SETUP_WINDOWS.md)
@@ -10,43 +10,38 @@ PC を汚さない構成です。インストーラーや PATH の変更は使�
 
 ```bat
 setup.bat          rem 必要なものを runtime\ にダウンロード
-start.bat          rem 起動の画面（チャットだけ / フル をえらぶ）
+start.bat          rem 起動の画面（使うもの・アイコンを選ぶ）→ 起動
 ```
 
 ## 仕組み
 
 ```
-マイク ─▶ 画面（Edge）─▶ Discord ゲート ─▶ Open-LLM-VTuber ─┬─▶ 音声認識（ReazonSpeech, CPU）
-                                                            ├─▶ 頭脳の中継 ─┬▶ Ollama（GPU）
-                                                            │               └▶ Web 検索（検索語とページ取得だけ外へ）
-                                                            └─▶ 声の中継 ─▶ AivisSpeech ─▶ ヘッドホン
+キーボード・貼った画像・画面のスクショ ─┐
+マイク ─▶ 話し終わりの判定 ─▶ 音声認識 ─┴─▶ アプリ（WebView2）─▶ 頭脳の中継 ─┬▶ Ollama（GPU）
+         （Silero VAD）     （ReazonSpeech, CPU）    │                       ├▶ 記憶（data\）
+                                                    │                       └▶ Web 検索（検索語とページ取得だけ外へ）
+                                                    └─▶ 声の中継 ─▶ AivisSpeech ─▶ ヘッドホン
 ```
-
-Open-LLM-VTuber 本体は改造せず、前後に中継を挟んだり、設定で変えられない部分だけを起動時に直したりしています。
 
 ## 中身
 
 | パス | 内容 |
 |---|---|
 | `maid.bat` / `setup.bat` / `start.bat` | 入口。中身は `scripts/maid.ps1` |
-| `scripts/maid.ps1` | ダウンロード・確認・起動・停止・診断など（`maid.bat` で一覧） |
-| `scripts/olv_patch.py` | Open-LLM-VTuber に当てる修正（画面のマイク設定、conf.yaml を maid の形にそろえる、音声認識モデルの展開） |
-| `services/llm_proxy.py` | 頭脳の中継。考えるモードを切る、モデルのすり替え、繰り返しの打ち切り、今の日時と検索結果を渡す |
+| `scripts/maid.ps1` | ダウンロード・起動・停止・診断・片付け（`maid.bat` で一覧） |
+| `app/maid_app.py` | アプリ（WebView2）。起動の画面と会話のウィンドウ |
+| `app/chat.py` | 会話の中身。頭脳の中継に話しかけ、声で返事するときは文ごとに読ませる。キャラから話しかける |
+| `app/listen.py` | 声を聞く。マイク → 話し終わりの判定（Silero VAD）→ 音声認識（ReazonSpeech） |
+| `app/screen.py` | 画面を 1 枚撮る・貼られた画像を小さくする（頭脳に見せる） |
+| `app/common.py` | 設定（`maid.settings.json`）・キャラ（`character.yaml`）・アイコン（`data\icons\`）の読み書き |
+| `app/ui/` | 起動の画面（`launcher.html`）と会話の画面（`chat.html`） |
+| `services/llm_proxy.py` | 頭脳の中継。考えるモードを切る、モデルのすり替え、繰り返しの打ち切り、今の日時と検索結果と記憶を渡す |
 | `services/memory.py` | 記憶。会話ログ・前の会話の要約・覚えていること（`data/` に保存） |
 | `services/web_search.py` | Web 検索（DuckDuckGo）とページ本文（PDF も）の抜き出し。外に出るのは検索語と開いたページだけ |
 | `services/tts_bridge.py` | 声の中継。AivisSpeech を OpenAI 互換の TTS として見せる |
-| `services/discord_gate.py` | Discord ゲート。Discord で通話中は声を本体に渡さない |
-| `app/maid_app.py` | maid のアプリ（WebView2）。起動の画面・チャットだけの版・フル版（タスクトレイ・デスクトップのキャラ・チャットのウィンドウ） |
-| `app/chat.py` | チャットだけの版の中身。頭脳の中継に直接話しかけ、声で返事するときは文ごとに読ませる |
-| `app/listen.py` | チャットだけの版で声を聞く。マイク → 話し終わりの判定（Silero VAD）→ 音声認識（ReazonSpeech） |
-| `app/common.py` | 設定（`maid.settings.json`）とアイコン（`data\icons\`）の読み書き |
-| `app/ui/` | 起動の画面（`launcher.html`）とチャットだけの版の画面（`chat.html`） |
 | `services/winutil.py` | Windows の小物（最後に PC を触ってからの秒数・Discord で通話中か） |
-| `frontend/maid-vrm.js` | 3D モデル（VRM）を表示する（Open-LLM-VTuber の画面の中・デスクトップのキャラ） |
-| `frontend/character.html` / `character.js` | デスクトップのキャラの画面。Discord ゲートから届く声を鳴らす |
 | `config/maid.settings.default.json` | `maid.settings.json`（いつも使う設定）の既定値 |
-| `config/open-llm-vtuber/conf.yaml` | Open-LLM-VTuber の設定の雛形（maid で使う項目だけ。setup で `runtime/` にコピーされる） |
-| `tests/` | テスト（`runtime\uv\uv.exe run --no-project --python 3.10 --with "websockets>=13" --with openai --with ruamel.yaml --with pyyaml --with pypdf --with numpy python -m unittest discover -s tests`） |
+| `config/character.default.yaml` | `character.yaml`（キャラの名前・性格）の雛形 |
+| `tests/` | テスト（`runtime\uv\uv.exe run --no-project --python 3.10 --with openai --with pyyaml --with pypdf --with numpy --with pillow python -m unittest discover -s tests`） |
 | `runtime/` | ダウンロードしたもの一式（git の管理外。消せば元通り） |
-| `data/` | 記憶（git の管理外。消すと全部忘れる） |
-| `models/` | 自分で用意した 3D モデルなど（git の管理外） |
+| `data/` | 記憶・会話・アイコン（git の管理外。消すと全部忘れる） |

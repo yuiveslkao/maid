@@ -105,7 +105,7 @@ class ProxyTest(unittest.TestCase):
         self.assertNotIn("model", llm_proxy.with_defaults({}, "other"))
 
     def test_streaming_with_openai_client(self):
-        """Open-LLM-VTuber と同じ openai クライアントでストリーミングが届くか。"""
+        """OpenAI 互換のクライアントでストリーミングが届くか。"""
         try:
             from openai import OpenAI
         except ImportError:

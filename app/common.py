@@ -1,16 +1,22 @@
-"""maid のアプリで使う、設定（maid.settings.json）とアイコン（data\\icons\\）の読み書き。"""
+"""maid のアプリで使う、設定（maid.settings.json）・キャラ（character.yaml）・アイコン（data\\icons\\）の読み書き。"""
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from pathlib import Path
+
+log = logging.getLogger("common")
 
 ROOT = Path(__file__).resolve().parent.parent
 ICON_KINDS = ("character", "user")
 ICON_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
 MAX_ICON_BYTES = 8_000_000
+CHARACTER_KEYS = ("name", "human", "persona")
+# 前に使っていた Open-LLM-VTuber の設定（キャラの設定をここから引っ越す）
+OLD_OLV_CONF = ROOT / "runtime" / "Open-LLM-VTuber" / "conf.yaml"
 
 
 class Settings:
@@ -34,6 +40,49 @@ class Settings:
         data = self._read(self.path)
         data.update(values)
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def character_yaml(name: str, human: str, persona: str) -> str:
+    body = "".join(f"  {line}\n" if line else "\n" for line in persona.strip("\n").splitlines())
+    return ("# キャラの設定（name: キャラの名前 / human: あなたの名前 / persona: 性格・口調）\n\n"
+            f"name: {json.dumps(name, ensure_ascii=False)}\n"
+            f"human: {json.dumps(human, ensure_ascii=False)}\n\n"
+            f"persona: |\n{body}")
+
+
+def ensure_character(path: Path | None = None, default: Path | None = None, old_conf: Path | None = OLD_OLV_CONF) -> Path:
+    """character.yaml が無ければ作る。前に Open-LLM-VTuber の conf.yaml に書いていたキャラがあれば、それを引き継ぐ。"""
+    path = path or ROOT / "character.yaml"
+    default = default or ROOT / "config" / "character.default.yaml"
+    if path.exists():
+        return path
+    if old_conf and old_conf.exists():
+        try:
+            import yaml
+
+            cc = (yaml.safe_load(old_conf.read_text(encoding="utf-8")) or {}).get("character_config") or {}
+            if cc.get("persona_prompt"):
+                path.write_text(character_yaml(str(cc.get("character_name") or "メイド"), str(cc.get("human_name") or "ご主人様"),
+                                               str(cc["persona_prompt"])), encoding="utf-8")
+                log.info("キャラの設定を %s から %s に引っ越しました", old_conf, path)
+                return path
+        except Exception as e:
+            log.warning("前のキャラの設定を読めませんでした (%s): %s", old_conf, e)
+    path.write_text(default.read_text(encoding="utf-8"), encoding="utf-8")
+    return path
+
+
+def load_character(path: Path | None = None) -> dict:
+    """キャラの名前・相手の名前・性格（persona）。読めなければ簡単な既定値。"""
+    out = {"name": "メイド", "human": "ご主人様", "persona": "あなたは親しみやすいアシスタントです。日本語の話し言葉で、短く答えてください。"}
+    try:
+        import yaml
+
+        data = yaml.safe_load(ensure_character(path).read_text(encoding="utf-8")) or {}
+        out.update({k: str(data[k]).strip() for k in CHARACTER_KEYS if data.get(k)})
+    except Exception as e:
+        log.warning("キャラの設定を読めませんでした: %s", e)
+    return out
 
 
 class Icons:

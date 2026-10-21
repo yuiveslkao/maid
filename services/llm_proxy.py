@@ -1,7 +1,7 @@
-"""頭脳の中継。Ollama の前に置き、Open-LLM-VTuber からのチャットに手を加える。
+"""頭脳の中継。Ollama の前に置き、maid のアプリからのチャットに手を加える。
 
 - 「考えてから答える」モードを切る（reasoning_effort: "none"）。切らないと、見えないところで数秒考えてから話し始める。
-- 使うモデルを maid.settings.json の model にすり替える（conf.yaml のモデル名は使わない）。
+- 使うモデルを maid.settings.json の model にすり替える（アプリは model: "maid" で送ってくる）。
 - 返事の長さに上限を付け、同じ言葉の繰り返し（無限ループ）を見つけたら打ち切る。
 - 今の日時を伝える。必要なときは Web 検索して結果を渡し、返事の最後に出典を付ける（services/web_search.py）。
   チャットに URL が貼られたら、検索せずにそのページを直接読む。
@@ -53,11 +53,12 @@ QUERY_PROMPT = ("あなたは検索語を作る係です。会話の流れを踏
                 "説明や記号は付けない。会話相手の名前や家族の情報など、個人的な情報は入れない。"
                 "検索の必要がなければ「なし」とだけ出力する。")
 QUERY_CONTEXT_MESSAGES = 6  # 検索語を作るときに見せる直前の発言の数
-# Open-LLM-VTuber がキャラから話しかけさせるときに送ってくる指示（prompts/utils/proactive_speak_prompt.txt）
+# アプリがキャラから話しかけさせるときに送ってくる合図（app/chat.py の PROACTIVE_MARK）
 PROACTIVE_MARK = "Please say something"
 PROACTIVE_PROMPT = ("（あなたから話しかける番です。相手は今は何も言っていません）\n話題: {topic}\n"
                     "キャラの口調で、1〜2 文で自然に話しかける。返事を急かさない。前置きや説明は言わない。")
 PROACTIVE_CONTEXT_SECONDS = 1800  # 話しかけた内容を、相手の返事のときに思い出させる期限
+EMBED_KEEP_ALIVE = "10m"   # 記憶を探すモデルを、最後に使ってからメモリに置いておく時間
 STOP_EVENT = b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
 
 
@@ -72,7 +73,7 @@ def with_defaults(req: dict, model: str | None) -> dict:
 
 
 def rewrite_model(body: bytes, model: str | None) -> bytes:
-    """/api/chat などのモデル名だけをすり替える（Open-LLM-VTuber が起動時にモデルを読み込ませる呼び出し）。"""
+    """/api/chat などのモデル名だけをすり替える。"""
     try:
         req = json.loads(body)
     except (ValueError, UnicodeDecodeError):
@@ -217,11 +218,12 @@ def ollama_chat(upstream: str, model: str | None) -> Callable[[list, int], str]:
 
 
 def ollama_embed(upstream: str, model: str) -> Callable[[list[str]], list | None]:
-    """意味のベクトルを作る。GPU は頭脳に空けておくため CPU で動かす（num_gpu: 0）。"""
+    """意味のベクトルを作る。GPU は頭脳に空けておくため CPU で動かす（num_gpu: 0）。
+    メモリを 1GB ほど使うので、しばらく話さなければ降ろす（話しかけたときに 1〜2 秒で読み込み直す）。"""
     up = urllib.parse.urlparse(upstream)
 
     def embed(texts: list[str]) -> list | None:
-        body = {"model": model, "input": texts, "keep_alive": -1, "options": {"num_gpu": 0}}
+        body = {"model": model, "input": texts, "keep_alive": EMBED_KEEP_ALIVE, "options": {"num_gpu": 0}}
         conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=120)
         try:
             conn.request("POST", "/api/embed", body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -274,7 +276,7 @@ def make_handler(upstream: str, model: str | None = None, search_mode: str = "of
     read_pages = read_fn or web_search.read_pages
     # 直前の検索結果（「それっていつ？」のような続きの質問に使う）
     last_search: dict = {"ctx": None, "turns": 0}
-    # キャラから話しかけた内容（Open-LLM-VTuber は履歴に残さないので、相手が返事をしたときにこちらで足す）
+    # キャラから話しかけた内容（アプリは履歴に残さないので、相手が返事をしたときにこちらで足す）
     last_proactive: dict = {"text": "", "when": 0.0}
 
     class Handler(BaseHTTPRequestHandler):

@@ -240,7 +240,7 @@ class ProxyMemoryTest(unittest.TestCase):
         self.assertEqual([(t.user, t.assistant) for t in self.m.pending()], [("ただいま", "ねえねえ、テストどうだった？")])
 
     def test_proactive(self):
-        # Open-LLM-VTuber の「話しかけて」は、話題つきの日本語の指示に置き換わる
+        # アプリの「話しかけて」の合図は、話題つきの日本語の指示に置き換わる
         self.chat("Please say something that would be engaging and appropriate for the current context.")
         sent = FakeOllama.requests[-1]["messages"][-1]["content"]
         self.assertIn("あなたから話しかける番", sent)

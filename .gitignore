@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 runtime/
 maid.settings.json
-models/*
-!models/README.md
+character.yaml
 data/
+# 前に 3D モデル（VRM）を置いていた場所。配布できないモデルが入っていることがあるので、git には入れない
+models/

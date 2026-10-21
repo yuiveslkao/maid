@@ -1,8 +1,7 @@
 """AivisSpeech Engine を OpenAI 互換の TTS API (/v1/audio/speech) として見せる小さな中継サーバー。
 
-Open-LLM-VTuber v1.2.x は AivisSpeech に標準対応していないが、OpenAI 互換 TTS
-(`tts_model: 'openai_tts'`) には対応しているので、その形に変換する。
-Open-LLM-VTuber 本体を改造しないので、本体のアップデートに影響されない。
+maid のアプリ（app/chat.py の Speaker）は、返事を文ごとにここへ送って声にする。
+声の名前（「話者名/スタイル名」）をスタイル ID に変換し、使う声のモデルを起動時に読み込んでおく。
 
 標準ライブラリだけで動く。
 
