@@ -89,6 +89,9 @@ public sealed class Parts : IDisposable
             // GPU に載らない部分（Gemma の単語ごとの大きな表など）を、専有メモリにコピーさせない:
             // CPU 用の並べ替え（repack）と、GPU とやりとりするための固定メモリ（host buffer）を使わず、ファイルのまま読む
             args.AddRange(["--cache-ram", "0", "--load-mode", "mmap", "--lazy-mode", "on", "--no-repack", "--no-host"]);
+            // Gemma は近くだけを見る層（SWA）があり、そのままだと前の会話を毎回最初から読み直す（1 秒ほど）。
+            // 全部の長さを取っておけば読み直さないので、代わりに要らなくなる途中経過の保存（1 つ 10MB ほど）もやめる
+            args.AddRange(["--swa-full", "--ctx-checkpoints", "0"]);
             args.AddRange(["-lv", "4"]);  // 読み込みのとき、どこに何 MB 確保したかをログに出す
         }
         if (File.Exists(paths.Model(s.MmprojFile)))
