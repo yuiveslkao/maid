@@ -4,6 +4,7 @@ obj/
 runtime/
 /lib/
 /maid.exe
+maid-crash.log
 maid.settings.json
 character.yaml
 data/

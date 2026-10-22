@@ -17,12 +17,12 @@ jobs:
         run: dotnet test tests/Maid.Tests -c Release
       - name: Publish
         run: dotnet publish src/Maid -c Release -o publish
-      - name: Pack (maid.exe と lib\ だけ)
+      - name: Pack (maid.exe と、ネイティブの DLL を入れた lib\)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out/lib | Out-Null
           Move-Item publish/maid.exe out/
-          foreach ($f in "e_sqlite3.dll", "onnxruntime.dll", "sherpa-onnx-c-api.dll", "WebView2Loader.dll") { Move-Item "publish/$f" out/lib/ }
+          Get-ChildItem publish -Filter *.dll | Move-Item -Destination out/lib/
       - uses: actions/upload-artifact@v4
         with:
           name: maid-win-x64
