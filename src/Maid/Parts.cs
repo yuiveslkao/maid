@@ -85,7 +85,12 @@ public sealed class Parts : IDisposable
             "--jinja", "--reasoning-budget", "0", "--reasoning-format", "deepseek", "--no-webui",
         };
         if (!basic)
-            args.AddRange(["--cache-ram", "0", "--load-mode", "mmap", "--lazy-mode", "on"]);
+        {
+            // GPU に載らない部分（Gemma の単語ごとの大きな表など）を、専有メモリにコピーさせない:
+            // CPU 用の並べ替え（repack）と、GPU とやりとりするための固定メモリ（host buffer）を使わず、ファイルのまま読む
+            args.AddRange(["--cache-ram", "0", "--load-mode", "mmap", "--lazy-mode", "on", "--no-repack", "--no-host"]);
+            args.AddRange(["-lv", "4"]);  // 読み込みのとき、どこに何 MB 確保したかをログに出す
+        }
         if (File.Exists(paths.Model(s.MmprojFile)))
             args.AddRange(["--mmproj", paths.Model(s.MmprojFile)]);
         return Start(basic ? "brain-basic" : "brain", paths.LlamaServer, args);  // 1 回目のログ（止まった理由）を残す
