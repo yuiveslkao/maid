@@ -72,7 +72,7 @@ public sealed class Parts : IDisposable
     }
 
     /// <summary>
-    /// 頭脳。モデルは全部 GPU に載せ、ファイルはメモリに写さずに読む（mmap。メモリの「専有」に数えられない）。
+    /// 頭脳。モデルは全部 GPU に載せ、RAM には残さない。
     /// Gemma の単語ごとの大きな表は、要る行だけをディスクから読む（--lazy-mode on）。考えるモードは切る。
     /// </summary>
     /// <param name="basic">新しいオプション（メモリの節約）を付けない。古い llama.cpp で起動できなかったとき用。</param>
@@ -86,9 +86,10 @@ public sealed class Parts : IDisposable
         };
         if (!basic)
         {
-            // GPU に載らない部分（Gemma の単語ごとの大きな表など）を、専有メモリにコピーさせない:
-            // CPU 用の並べ替え（repack）と、GPU とやりとりするための固定メモリ（host buffer）を使わず、ファイルのまま読む
-            args.AddRange(["--cache-ram", "0", "--load-mode", "mmap", "--lazy-mode", "on", "--no-repack", "--no-host"]);
+            // mmap で読むと、Windows 版の llama.cpp は GPU に送り終えた分（3GB ほど）も RAM に置いたままにするので、
+            // 普通に読んで GPU に送る（--load-mode none）。大きな表は --lazy-mode on なら、それでもファイルのまま要る行だけ読む。
+            // CPU 用の並べ替え（repack）と、GPU とやりとりするための固定メモリ（host buffer）も使わない
+            args.AddRange(["--cache-ram", "0", "--load-mode", "none", "--lazy-mode", "on", "--no-repack", "--no-host"]);
             // Gemma は近くだけを見る層（SWA）があり、そのままだと前の会話を毎回最初から読み直す（1 秒ほど）。
             // 全部の長さを取っておけば読み直さないので、代わりに要らなくなる途中経過の保存（1 つ 10MB ほど）もやめる
             args.AddRange(["--swa-full", "--ctx-checkpoints", "0"]);

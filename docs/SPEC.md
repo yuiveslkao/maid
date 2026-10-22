@@ -62,12 +62,12 @@ VRAM 8GB がいちばんの制約です。**GPU は頭脳（LLM）専用**にし
 
 ### 頭脳（llama-server）の動かし方
 
-メモリを減らすため、モデルのファイルはメモリに写さずに読む（mmap。Windows がほかのアプリのために空けられる）。
+RAM を減らすため、GPU に送ったモデルは RAM に残さない。
 
 | オプション | 理由 |
 |---|---|
 | `-ngl 999` | モデルを全部 GPU に載せる |
-| `--load-mode mmap` | ファイルを専有メモリに読み込まない |
+| `--load-mode none` | GPU に送り終えたモデルを RAM に残さない（mmap だと Windows 版は 3GB ほど残したままになる） |
 | `--lazy-mode on` | Gemma の単語ごとの大きな表（Per-Layer Embeddings）は、要る行だけディスクから読む |
 | `--cache-ram 0` | 会話の一時保存をメモリに取らない |
 | `--no-repack --no-host` | CPU 用の並べ替えと、GPU とやりとりする固定メモリを使わない（専有メモリにコピーさせない） |
