@@ -22,8 +22,8 @@ public sealed class Recognizer : IDisposable
 
     readonly OfflineRecognizer asr;
     readonly VoiceActivityDetector vad;
-    float[] buf = [];
-    float[] recent = [];
+    float[] buf = [];                     // VAD にまだ渡していない端数（Window より短い）
+    readonly List<float> recent = [];     // 話しはじめの少し前の音を足すために残しておく音
     int recentFrom;  // recent の先頭が、Reset から何サンプル目か
 
     /// <param name="hotwords">聞き取りやすくする言葉（キャラの名前など）。</param>
@@ -71,25 +71,25 @@ public sealed class Recognizer : IDisposable
     {
         vad.Reset();
         buf = [];
-        recent = [];
+        recent.Clear();
         recentFrom = 0;
     }
 
     /// <summary>音を渡す。話し終わった文があれば、その文字を返す。</summary>
     public List<string> Feed(float[] samples)
     {
-        recent = [.. recent, .. samples];
-        if (recent.Length > KeepSeconds * Rate)
+        recent.AddRange(samples);
+        if (recent.Count > (KeepSeconds + 1) * Rate)  // 1 秒分たまってからまとめて捨てる（毎回詰め直さない）
         {
-            var drop = recent.Length - KeepSeconds * Rate;
-            recent = recent[drop..];
+            var drop = recent.Count - KeepSeconds * Rate;
+            recent.RemoveRange(0, drop);
             recentFrom += drop;
         }
-        buf = [.. buf, .. samples];
+        var all = buf.Length == 0 ? samples : [.. buf, .. samples];
         var at = 0;
-        for (; at + Window <= buf.Length; at += Window)
-            vad.AcceptWaveform(buf[at..(at + Window)]);
-        buf = buf[at..];
+        for (; at + Window <= all.Length; at += Window)
+            vad.AcceptWaveform(all[at..(at + Window)]);
+        buf = all[at..];
         var out_ = new List<string>();
         while (!vad.IsEmpty())
         {
@@ -100,8 +100,8 @@ public sealed class Recognizer : IDisposable
             if (speech.Length < MinSeconds * Rate)
                 continue;
             int a = Math.Max(start - (int)(PreSeconds * Rate), recentFrom) - recentFrom, b = start - recentFrom;
-            if (0 <= a && a < b && b <= recent.Length)
-                speech = [.. recent[a..b], .. speech];
+            if (0 <= a && a < b && b <= recent.Count)
+                speech = [.. recent.GetRange(a, b - a), .. speech];
             var text = Decode(speech);
             if (NotWords.Replace(text, "").Length == 0)
                 continue;
