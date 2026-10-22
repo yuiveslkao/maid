@@ -1,5 +1,8 @@
 {
-  "model": "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_K_M",
+  "model_repo": "unsloth/gemma-4-E4B-it-GGUF",
+  "model_file": "gemma-4-E4B-it-Q4_K_M.gguf",
+  "mmproj_file": "mmproj-F16.gguf",
+  "context": 8192,
   "voice": "コハク/あまあま",
   "speed": 1.0,
   "mic": true,
@@ -9,5 +12,7 @@
   "search_filler": "ちょっと調べるね。",
   "memory": true,
   "proactive_minutes": 15,
-  "embed_model": "bge-m3"
+  "embed": true,
+  "embed_repo": "gpustack/bge-m3-GGUF",
+  "embed_file": "bge-m3-Q8_0.gguf"
 }

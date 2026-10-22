@@ -1,7 +1,9 @@
 __pycache__/
-*.pyc
-.venv/
+bin/
+obj/
 runtime/
+/lib/
+/maid.exe
 maid.settings.json
 character.yaml
 data/

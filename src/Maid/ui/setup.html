@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>maid のセットアップ</title>
+<!-- maid: セットアップの画面（maid.exe が開く。中身は Setup.cs）。足りないものだけを runtime\ にダウンロードする -->
+<style>
+  :root { --bg: #fff7fa; --panel: #fff; --line: #f3d3df; --accent: #f27aa6; --text: #3b2a33; --sub: #9a7f8b; --bad: #c0392b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: "Yu Gothic UI", "Meiryo UI", system-ui, sans-serif; font-size: 14px; }
+  body { padding: 18px 20px 80px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.lead { color: var(--sub); margin: 0 0 14px; line-height: 1.6; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 12px; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: var(--sub); font-weight: normal; }
+  .item { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .item:last-child { border-bottom: none; }
+  .item .top { display: flex; justify-content: space-between; gap: 10px; }
+  .item .size { color: var(--sub); font-size: 12px; white-space: nowrap; }
+  .item .state { color: var(--sub); font-size: 12px; margin-top: 4px; min-height: 1em; word-break: break-all; }
+  .item.done .state { color: #2e8b57; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  .bar div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .bar.busy div { width: 30%; animation: busy 1.2s infinite ease-in-out; }
+  @keyframes busy { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+  #error { display: none; color: var(--bad); background: #fdecea; border: 1px solid #f5c6c0; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; white-space: pre-wrap; }
+  .old { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+  .old code { color: var(--sub); }
+  .foot { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px;
+    background: var(--panel); border-top: 1px solid var(--line); }
+  button { font: inherit; font-weight: bold; border-radius: 12px; padding: 9px 22px; cursor: pointer; border: 1px solid var(--line); background: #fff; }
+  button.go { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  section button { font-weight: normal; font-size: 13px; padding: 5px 14px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>maid のセットアップ</h1>
+<p class="lead">動かすのに足りないものを、maid フォルダの <code>runtime\</code> にダウンロードします（インストールはしません）。
+大きいので時間がかかります。途中で止めても、次は続きから再開します。</p>
+<div id="error"></div>
+<section id="needs"><h2>ダウンロードするもの</h2><div id="list"></div></section>
+<section id="leftovers" style="display:none">
+  <h2>前の版のファイル（もう使いません）</h2>
+  <div id="oldList"></div>
+  <button id="removeOld">消す</button>
+</section>
+<div class="foot">
+  <button id="quit">やめる</button>
+  <button id="start" class="go">始める</button>
+</div>
+
+<script>
+(function () {
+  var api = window.maidApi;
+  var $ = function (id) { return document.getElementById(id); };
+  var running = false, finished = false;
+
+  function item(key) { return document.querySelector('.item[data-key="' + key + '"]'); }
+
+  function showLeftovers(list) {
+    $("leftovers").style.display = list.length ? "" : "none";
+    var total = 0;
+    $("oldList").innerHTML = "";
+    list.forEach(function (l) {
+      total += l.mb;
+      var row = document.createElement("div");
+      row.className = "old";
+      row.innerHTML = "<code></code><span></span>";
+      row.querySelector("code").textContent = l.path;
+      row.querySelector("span").textContent = (l.mb / 1000).toFixed(1) + " GB";
+      $("oldList").appendChild(row);
+    });
+    $("removeOld").textContent = "消す（" + (total / 1000).toFixed(1) + " GB）";
+  }
+
+  function load() {
+    api.setup_info().then(function (r) {
+      $("list").innerHTML = "";
+      r.needs.forEach(function (n) {
+        var el = document.createElement("div");
+        el.className = "item";
+        el.dataset.key = n.key;
+        el.innerHTML = '<div class="top"><span class="title"></span><span class="size"></span></div><div class="bar"><div></div></div><div class="state"></div>';
+        el.querySelector(".title").textContent = n.title;
+        el.querySelector(".size").textContent = n.size;
+        $("list").appendChild(el);
+      });
+      $("needs").style.display = r.needs.length ? "" : "none";
+      if (!r.needs.length) { finished = true; $("start").textContent = "次へ"; }
+      // 前の版のモデルを引き継ぐので、片付けはダウンロードが済んでから
+      showLeftovers(finished ? r.leftovers : []);
+    });
+  }
+
+  window.maid = {
+    progress: function (key, text, ratio) {
+      var el = item(key);
+      if (!el) return;
+      el.querySelector(".state").textContent = text;
+      var bar = el.querySelector(".bar");
+      bar.className = ratio === null || ratio === undefined ? "bar busy" : "bar";
+      bar.firstChild.style.width = ratio === null || ratio === undefined ? "" : Math.round(ratio * 100) + "%";
+      if (ratio === 1 && text === "完了") el.classList.add("done");
+    },
+    setupDone: function () {
+      running = false; finished = true;
+      $("start").disabled = false;
+      $("start").textContent = "次へ";
+      api.setup_info().then(function (r) { showLeftovers(r.leftovers); });
+    },
+    setupError: function (message) {
+      running = false;
+      $("error").style.display = "block";
+      $("error").textContent = "うまくいきませんでした: " + message + "\n通信を確かめて、もう一度「始める」を押してください（続きから再開します）。";
+      $("start").disabled = false;
+      $("start").textContent = "もう一度";
+    }
+  };
+
+  $("start").onclick = function () {
+    if (finished) { api.setup_next(); return; }
+    if (running) return;
+    running = true;
+    $("error").style.display = "none";
+    $("start").disabled = true;
+    api.setup_start();
+  };
+  $("quit").onclick = function () { api.quit(); };
+  $("removeOld").onclick = function () {
+    $("removeOld").disabled = true;
+    api.remove_leftovers().then(function () { return api.setup_info(); })
+      .then(function (r) { showLeftovers(r.leftovers); $("removeOld").disabled = false; });
+  };
+  window.addEventListener("maidready", load);
+})();
+</script>
+</body>
+</html>

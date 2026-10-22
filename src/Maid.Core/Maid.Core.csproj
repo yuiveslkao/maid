@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Windows 以外でも動く部分（頭脳・記憶・検索・声・耳）。テストは Linux でも走る -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Maid</RootNamespace>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" Version="1.8.5" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.32" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.8" />
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+    <PackageReference Include="SmartReader" Version="0.11.1" />
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\config\maid.settings.default.json" LogicalName="maid.settings.default.json" />
+    <EmbeddedResource Include="..\..\config\character.default.yaml" LogicalName="character.default.yaml" />
+  </ItemGroup>
+</Project>
