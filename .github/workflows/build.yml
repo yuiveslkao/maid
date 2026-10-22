@@ -1,4 +1,4 @@
-# maid.exe を作る。できたものは Actions の実行結果の「Artifacts」にある maid-win-x64（zip）からダウンロードする。
+# maid.exe を作る。できたもの（人に渡す用の maid フォルダ）は Actions の実行結果の「Artifacts」にある maid-win-x64（zip）からダウンロードする。
 name: build
 
 on:
@@ -17,12 +17,13 @@ jobs:
         run: dotnet test tests/Maid.Tests -c Release
       - name: Publish
         run: dotnet publish src/Maid -c Release -o publish
-      - name: Pack (maid.exe と、ネイティブの DLL を入れた lib\)
+      - name: Pack (maid.exe・ネイティブの DLL を入れた lib\・はじめに.txt。build.ps1 の dist\maid と同じ)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force out/lib | Out-Null
-          Move-Item publish/maid.exe out/
-          Get-ChildItem publish -Filter *.dll | Move-Item -Destination out/lib/
+          New-Item -ItemType Directory -Force out/maid/lib | Out-Null
+          Move-Item publish/maid.exe out/maid/
+          Get-ChildItem publish -Filter *.dll | Move-Item -Destination out/maid/lib/
+          Copy-Item tools/dist-readme.txt "out/maid/はじめに.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: maid-win-x64

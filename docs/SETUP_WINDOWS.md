@@ -19,13 +19,17 @@ maid フォルダ（このリポジトリのフォルダ）で `build.bat` を�
 - 2 回目からは数十秒です。更新するときは `git pull` → `build.bat`。
 - maid.exe が動いている間は作れないので、閉じてから実行します。
 
-GitHub の **Actions** → 「build」→ **Artifacts** の `maid-win-x64` からダウンロードすることもできます（Chrome が止めたら、ダウンロード一覧から「保存」）。
+**人に渡すとき**: `build.bat` は `dist\maid-win-x64.zip` も作ります。中身は `maid.exe`・`lib\`・`はじめに.txt` だけ（ソースや記憶は入りません）。
+受け取った人は好きな場所に展開して maid.exe を起動すれば、セットアップから始まります。
+
+GitHub の **Actions** → 「build」→ **Artifacts** の `maid-win-x64` からも同じものをダウンロードできます（Chrome が止めたら、ダウンロード一覧から「保存」）。
 
 ```
 maid\
 ├ maid.exe            ← ダブルクリックで起動
 ├ lib\                ← maid.exe が使う部品（消さない）
 ├ build.bat           ← maid.exe を作る
+├ dist\               ← 人に渡す用（build.bat が作る）
 ├ maid.settings.json  ← いつもの設定（初回に作る）
 ├ character.yaml      ← キャラの設定（初回に作る）
 ├ data\               ← 記憶・会話・アイコン

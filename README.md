@@ -27,7 +27,7 @@ PC を汚さない構成です。インストーラーや PATH の変更は使�
 | `src/Maid.Core/` | Windows 以外でも動く中身。頭脳への話しかけ（`Brain.cs`）、記憶（`Memory.cs`）、検索（`WebSearch.cs`）、声（`Voice.cs`）、耳（`Listen.cs`）、設定 |
 | `tests/Maid.Tests/` | テスト（`dotnet test tests/Maid.Tests`。Linux でも動く） |
 | `config/` | `maid.settings.json` と `character.yaml` の雛形（exe に埋め込む） |
-| `build.bat` / `tools/build.ps1` | この PC で maid.exe を作る（.NET SDK は `runtime\dotnet` に置く） |
+| `build.bat` / `tools/build.ps1` | この PC で maid.exe を作る（.NET SDK は `runtime\dotnet` に置く）。人に渡す用の `dist\maid-win-x64.zip` も作る（`tools/dist-readme.txt` が中の「はじめに.txt」） |
 | `.github/workflows/build.yml` | GitHub でも maid.exe を作る（Actions の Artifacts から zip でダウンロード） |
 | `runtime/` | ダウンロードしたもの一式（git の管理外。消せば元通り） |
 | `data/` | 記憶・会話・アイコン（git の管理外。消すと全部忘れる） |

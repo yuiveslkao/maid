@@ -1,6 +1,7 @@
 ﻿# maid.exe をこの PC で作る（build.bat から呼ぶ）。
 #   .NET SDK はインストーラーを使わず runtime\dotnet に置く。ライブラリなども全部 runtime\ の中に置き、ユーザーフォルダには書かない。
 #   できた maid.exe と lib\ は maid フォルダに置く。
+#   人に渡す用（動くのに必要なファイルだけ）は dist\maid\ と dist\maid-win-x64.zip に置く。
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -44,5 +45,16 @@ if ($LASTEXITCODE -ne 0) { throw "maid.exe を作れませんでした（上の�
 New-Item -ItemType Directory -Force (Join-Path $Root "lib") | Out-Null
 Copy-Item -Force (Join-Path $out "maid.exe") $Root
 Get-ChildItem $out -Filter *.dll | Copy-Item -Force -Destination (Join-Path $Root "lib")
+
+# 人に渡す用: maid.exe・lib\・はじめに.txt だけ
+$dist = Join-Path $Root "dist"
+if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+$pack = Join-Path $dist "maid"
+New-Item -ItemType Directory -Force (Join-Path $pack "lib") | Out-Null
+Copy-Item (Join-Path $out "maid.exe") $pack
+Get-ChildItem $out -Filter *.dll | Copy-Item -Destination (Join-Path $pack "lib")
+Copy-Item (Join-Path $PSScriptRoot "dist-readme.txt") (Join-Path $pack "はじめに.txt")
+Compress-Archive -Path $pack -DestinationPath (Join-Path $dist "maid-win-x64.zip")
 Remove-Item -Recurse -Force $out
 Write-Host "できました: $(Join-Path $Root 'maid.exe')" -ForegroundColor Green
+Write-Host "人に渡す用: $(Join-Path $dist 'maid-win-x64.zip')" -ForegroundColor Green
