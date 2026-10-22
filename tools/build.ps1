@@ -37,7 +37,8 @@ if (Get-Process maid -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq 
 Write-Host "maid.exe を作っています..." -ForegroundColor Cyan
 $out = Join-Path $Rt "build"
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-& $Dotnet publish (Join-Path $Root "src\Maid") -c Release -o $out "-p:RestoreConfigFile=$(Join-Path $Root 'nuget.config')"
+# ビルドを速くするための常駐プロセスは使わない（終わったあとに残ってメモリを使い続けるため）
+& $Dotnet publish (Join-Path $Root "src\Maid") -c Release -o $out --disable-build-servers "-p:RestoreConfigFile=$(Join-Path $Root 'nuget.config')"
 if ($LASTEXITCODE -ne 0) { throw "maid.exe を作れませんでした（上のエラーを見てください）。" }
 
 New-Item -ItemType Directory -Force (Join-Path $Root "lib") | Out-Null
