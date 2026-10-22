@@ -17,6 +17,7 @@ public sealed class Brain
     static readonly TimeSpan FollowupFor = TimeSpan.FromMinutes(10); // 〃 の期限
     static readonly TimeSpan ProactiveContextFor = TimeSpan.FromMinutes(30);  // 話しかけた内容を、相手の返事のときに思い出させる期限
     const string Weekdays = "日月火水木金土";
+    const int LoopWindow = 400;  // 繰り返しを探す、返事の末尾の長さ
     // 過去の返事に付けた出典（今の形と前の形）
     static readonly Regex Sources = new(@"\s*(<think>出典: .*?</think>|\[出典: [^\]]*\])", RegexOptions.Singleline);
     const string ClockNote = "現在の日時は {0}。時刻・日付・曜日を聞かれたら、この日時を使って正確に答える（調べなくてよい）。";
@@ -72,16 +73,25 @@ public sealed class Brain
 
         var reply = new StringBuilder();
         TimeSpan? first = null;
-        await foreach (var piece in llm.StreamAsync(msgs, ct))
+        try
         {
-            first ??= sw.Elapsed;
-            reply.Append(piece);
-            Say(piece);
-            if (IsLooping(reply.ToString()))
+            await foreach (var piece in llm.StreamAsync(msgs, ct))
             {
-                Log.Warn($"同じ言葉の繰り返しを見つけたので返事を打ち切りました: …{Tail(reply.ToString(), 40)}");
-                break;  // ここで抜けると接続が切れ、頭脳の生成も止まる
+                first ??= sw.Elapsed;
+                reply.Append(piece);
+                Say(piece);
+                if (IsLooping(reply.Length > LoopWindow ? reply.ToString(reply.Length - LoopWindow, LoopWindow) : reply.ToString()))
+                {
+                    Log.Warn($"同じ言葉の繰り返しを見つけたので返事を打ち切りました: …{Tail(reply.ToString(), 40)}");
+                    break;  // ここで抜けると接続が切れ、頭脳の生成も止まる
+                }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            if (reply.Length > 0)  // 途中で止めた返事も、言ったところまでは覚える（画面の会話の記録にも残る）
+                memory?.Record(userText, reply.ToString(), proactive);
+            throw;
         }
         Say(suffix);
         var text = reply.ToString();
@@ -94,10 +104,13 @@ public sealed class Brain
         return all.ToString();
     }
 
-    /// <summary>日時と、覚えていることと、要るなら検索結果を差し込む。戻り値は (頭脳に渡す会話, 返事の最後に足す出典)。</summary>
+    /// <summary>
+    /// 日時と、覚えていることと、要るなら検索結果を差し込む。戻り値は (頭脳に渡す会話, 返事の最後に足す出典)。
+    /// 差し込むものは毎回変わるので、全部最後の発言のすぐ前に置く（前の会話の部分が毎回同じになり、頭脳が読み直さずに済む）。
+    /// </summary>
     async Task<(JsonArray, string)> AugmentAsync(JsonArray messages, bool proactive, Action<string> say, CancellationToken ct)
     {
-        var msgs = CleanHistory(messages);
+        var msgs = CleanHistory(messages);  // ここから先は msgs を直接書き換えてよい（新しく作ったもの）
         if (proactive)
         {
             var topic = memory?.Topic() ?? DefaultTopic;
@@ -107,24 +120,24 @@ public sealed class Brain
         else if (lastProactive.Text.Length > 0 && DateTime.Now - lastProactive.When < ProactiveContextFor)
         {
             // 直前にキャラから話しかけていたら、その内容を相手の返事の前に置く（画面の会話の記録には残していない）
-            var list = msgs.Select(m => m?.DeepClone()).ToList();
-            list.Insert(Math.Max(0, list.FindLastIndex(m => Msg.Role(m) == "user")), Msg.Make("assistant", lastProactive.Text));
-            msgs = new JsonArray(list.ToArray());
+            Msg.InsertBeforeLastUser(msgs, Msg.Make("assistant", lastProactive.Text));
             lastProactive = ("", DateTime.MinValue);
         }
-        var history = Msg.Copy(msgs);
-        var text = proactive ? "" : Msg.LastUserText(msgs);
-        if (memory is not null)
-        {
-            var note = await memory.ContextAsync(text);
-            if (note.Length > 0)
-                msgs = Msg.AddNote(msgs, note);
-        }
         if (searchMode != "off")
-            msgs = Msg.AddNote(msgs, SearchNote);
-        // 今の日時は最後の発言のすぐ前に置く（キャラ設定の後ろに足すより、小さいモデルでも使ってくれる）
+            Msg.AddNote(msgs, SearchNote);  // いつも同じなのでキャラ設定の後ろでよい
+        var text = proactive ? "" : Msg.LastUserText(msgs);
+        var notes = new List<string>();
+        if (memory is not null && await memory.ContextAsync(text) is { Length: > 0 } note)
+            notes.Add(note);
+        // 今の日時も最後の発言のすぐ前に置く（キャラ設定の後ろに足すより、小さいモデルでも使ってくれる）
         var now = DateTime.Now;
-        msgs = Msg.InsertBeforeLastUser(msgs, string.Format(ClockNote, $"{now:yyyy年MM月dd日}（{Weekdays[(int)now.DayOfWeek]}曜日）{now.Hour}時{now.Minute}分"));
+        notes.Add(string.Format(ClockNote, $"{now:yyyy年MM月dd日}（{Weekdays[(int)now.DayOfWeek]}曜日）{now.Hour}時{now.Minute}分"));
+        (JsonArray, string) Done(string sources = "")
+        {
+            foreach (var n in notes)
+                Msg.InsertBeforeLastUser(msgs, Msg.Make("system", n));
+            return (msgs, sources);
+        }
 
         var urls = searchMode != "off" ? WebSearch.FindUrls(text) : [];
         if (urls.Count > 0)  // 貼られたページは検索せずに直接読む
@@ -132,36 +145,38 @@ public sealed class Brain
             say(filler);
             var ctx = await search.ReadPagesAsync(urls, ct);
             Log.Info($"ページを読みました: {string.Join(", ", ctx.Results.Select(r => $"{r.Url} ({r.Text.Length} 文字)"))}");
-            return UseResults(msgs, ctx);
+            notes.Add(UseResults(ctx));
+            return Done(WebSearch.SourcesLine(ctx));
         }
         if (WebSearch.NeedsSearch(text, searchMode))
         {
             say(filler);  // 調べている間に読み上げが始まる
             var sw = Stopwatch.StartNew();
-            var query = await MakeQueryAsync(history, ct);
+            var query = await MakeQueryAsync(msgs, ct);
             Log.Info($"  検索語づくり {sw.Elapsed.TotalSeconds:0.0} 秒 →「{query ?? "なし"}」");
             if (query is null && WebSearch.NeedsSearch(text, "explicit"))  // はっきり頼まれたら必ず調べる
-                query = FallbackQuery(history);
+                query = FallbackQuery(msgs);
             if (!string.IsNullOrEmpty(query))
             {
                 var ctx = await search.SearchAsync(query, SearchPages, ct);
                 Log.Info($"検索「{query}」→ {(ctx.Results.Count > 0 ? string.Join(", ", ctx.Results.Select(r => r.Site)) : "見つからず")}");
-                return UseResults(msgs, ctx);
+                notes.Add(UseResults(ctx));
+                return Done(WebSearch.SourcesLine(ctx));
             }
         }
         if (lastSearch is { } last && lastSearchTurns < FollowupTurns && now - last.When < FollowupFor)
         {
             lastSearchTurns++;
-            msgs = Msg.InsertBeforeLastUser(msgs, WebSearch.BuildContext(last, followup: true));
+            notes.Add(WebSearch.BuildContext(last, followup: true));
         }
-        return (msgs, "");
+        return Done();
     }
 
-    (JsonArray, string) UseResults(JsonArray msgs, SearchContext ctx)
+    string UseResults(SearchContext ctx)
     {
         lastSearch = ctx;
         lastSearchTurns = 0;
-        return (Msg.InsertBeforeLastUser(msgs, WebSearch.BuildContext(ctx)), WebSearch.SourcesLine(ctx));
+        return WebSearch.BuildContext(ctx);
     }
 
     /// <summary>頭脳に、直前の会話を踏まえた短い検索語を作らせる。作れなければ発言から作る。「なし」なら null。</summary>
@@ -173,7 +188,7 @@ public sealed class Brain
             var answer = await llm.CompleteAsync(QueryRequest(history), 40, 0.2, ct);
             line = answer.Trim().Split('\n')[0].Trim(' ', '「', '」', '"', '\'', '`');
         }
-        catch (HttpRequestException e)
+        catch (Exception e) when (e is HttpRequestException or System.Text.Json.JsonException)
         {
             Log.Warn($"検索語を作れませんでした: {e.Message}");
         }
@@ -211,7 +226,7 @@ public sealed class Brain
             if (Msg.Role(c) == "assistant" && c["content"] is JsonValue)
             {
                 var s = Sources.Replace(Msg.TextOf(c), "");
-                if (filler.Length > 0 && s.StartsWith(filler))
+                if (filler.Length > 0 && s.StartsWith(filler, StringComparison.Ordinal))
                     s = s[filler.Length..];
                 c["content"] = s;
             }
@@ -223,7 +238,7 @@ public sealed class Brain
     /// <summary>末尾が同じ並びの繰り返しになっていたら true（例: 「ぱぱ、ぱぱ、ぱぱ、ぱぱ、」）。</summary>
     public static bool IsLooping(string text)
     {
-        var t = text.Length > 400 ? text[^400..] : text;
+        var t = text.Length > LoopWindow ? text[^LoopWindow..] : text;
         for (var n = 1; n <= 80; n++)
         {
             var reps = n <= 4 ? 8 : n <= 20 ? 4 : 3;

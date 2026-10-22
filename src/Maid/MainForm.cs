@@ -179,14 +179,17 @@ sealed class MainForm : Form
     void On(string name, Func<JsonArray, JsonNode?> f) => api[name] = a => Task.FromResult(f(a));
     void OnAsync(string name, Func<JsonArray, Task<JsonNode?>> f) => api[name] = f;
 
+    Setup EnsureSetup() => setup ??= new Setup(paths, settings, (key, text, ratio) => Js("progress", [key, text, ratio]));
+
     void Register()
     {
         On("open_url", a => { OpenUrl(Str(a, 0)); return null; });
 
         // セットアップ
-        On("setup_info", _ =>
+        // 前の版のファイルの大きさを数えるのに時間がかかることがあるので、ウィンドウのスレッドの外で
+        OnAsync("setup_info", _ => Task.Run<JsonNode?>(() =>
         {
-            setup ??= new Setup(paths, settings, (key, text, ratio) => Js("progress", [key, text, ratio]));
+            var setup = EnsureSetup();
             return new JsonObject
             {
                 ["needs"] = new JsonArray(Setup.Missing(paths, settings).Select(n => (JsonNode)new JsonObject
@@ -194,10 +197,10 @@ sealed class MainForm : Form
                 ["leftovers"] = new JsonArray(setup.Leftovers().Select(l => (JsonNode)new JsonObject
                     { ["path"] = Path.GetRelativePath(paths.Root, l.Path), ["mb"] = l.Bytes / 1_000_000 }).ToArray()),
             };
-        });
+        }));
         OnAsync("setup_start", async _ =>
         {
-            setup ??= new Setup(paths, settings, (key, text, ratio) => Js("progress", [key, text, ratio]));
+            var setup = EnsureSetup();
             if (settingUp)
                 return null;  // もう動いている
             settingUp = true;
@@ -284,7 +287,8 @@ sealed class MainForm : Form
     /// <summary>画面を撮る。自分のウィンドウが写らないように、撮る間だけ隠す。</summary>
     Task<string> CaptureAsync()
     {
-        var done = new TaskCompletionSource<string>();
+        // 続き（返事の準備）をウィンドウのスレッドで動かさない（隠したウィンドウを早く戻すため）
+        var done = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         BeginInvoke(async () =>
         {
             try

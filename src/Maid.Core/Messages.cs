@@ -32,26 +32,23 @@ public static class Msg
     public static string LastUserText(JsonArray messages) =>
         messages.LastOrDefault(m => Role(m) == "user") is { } u ? TextOf(u) : "";
 
-    public static JsonArray Copy(IEnumerable<JsonNode?> messages) => new(messages.Select(m => m?.DeepClone()).ToArray());
-
-    /// <summary>最後の相手の発言のすぐ前に system メッセージを足す。</summary>
-    public static JsonArray InsertBeforeLastUser(JsonArray messages, string text)
+    /// <summary>最後の相手の発言のすぐ前に足す（messages を書き換える）。</summary>
+    public static void InsertBeforeLastUser(JsonArray messages, JsonObject message)
     {
-        var list = messages.Select(m => m?.DeepClone()).ToList();
-        var k = list.FindLastIndex(m => Role(m) == "user");
-        list.Insert(k < 0 ? list.Count : k, Make("system", text));
-        return new JsonArray(list.ToArray());
+        var k = -1;
+        for (var i = messages.Count - 1; i >= 0 && k < 0; i--)
+            if (Role(messages[i]) == "user")
+                k = i;
+        messages.Insert(k < 0 ? messages.Count : k, message);
     }
 
-    /// <summary>最初の system メッセージの末尾に一言足す（無ければ先頭に足す）。</summary>
-    public static JsonArray AddNote(JsonArray messages, string note)
+    /// <summary>最初の system メッセージの末尾に一言足す（無ければ先頭に足す。messages を書き換える）。</summary>
+    public static void AddNote(JsonArray messages, string note)
     {
-        var list = messages.Select(m => m?.DeepClone()).ToList();
-        var k = list.FindIndex(m => Role(m) == "system" && m!["content"] is JsonValue);
-        if (k < 0)
-            list.Insert(0, Make("system", note));
+        var sys = messages.FirstOrDefault(m => Role(m) == "system" && m!["content"] is JsonValue);
+        if (sys is null)
+            messages.Insert(0, Make("system", note));
         else
-            list[k]!["content"] = TextOf(list[k]).TrimEnd() + "\n\n" + note;
-        return new JsonArray(list.ToArray());
+            sys["content"] = TextOf(sys).TrimEnd() + "\n\n" + note;
     }
 }

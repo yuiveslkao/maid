@@ -50,7 +50,7 @@ public sealed class Setup
             out_.Add(new("asr", "声を文字にするモデル（ReazonSpeech）", "約 700MB"));
         if (s.Mic && !File.Exists(p.SileroVad))
             out_.Add(new("vad", "話し終わりを見つけるモデル（Silero VAD）", "約 2MB"));
-        if (s.VoiceReply && new Parts(p).FindAivis() is null)
+        if (s.VoiceReply && Parts.FindAivis(p) is null)
             out_.Add(new("voice", "声（AivisSpeech Engine）", "約 1〜2GB"));
         return out_;
     }

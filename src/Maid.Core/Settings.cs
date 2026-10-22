@@ -10,6 +10,8 @@ public sealed class Settings
     static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     readonly string path;
     readonly JsonObject defaults;
+    readonly object gate = new();
+    (JsonObject Json, DateTime At)? cache;  // 読むたびにファイルを開かない（手で書き換えたら、更新日時が変わるので読み直す）
 
     public Settings(string path, string? defaultsJson = null)
     {
@@ -19,7 +21,7 @@ public sealed class Settings
             File.WriteAllText(path, defaults.ToJsonString(Pretty) + "\n");
     }
 
-    JsonObject User()
+    JsonObject ReadUser()
     {
         try
         {
@@ -31,15 +33,27 @@ public sealed class Settings
         }
     }
 
-    JsonNode? Get(string key)
+    /// <summary>ファイルに書いてある値（gate の中で呼ぶ）。</summary>
+    JsonObject User()
     {
-        var user = User();
-        return user[key] is { } v && !(v is JsonValue jv && jv.TryGetValue(out string? s) && s == "" && key != "search_filler")
-            ? v
-            : defaults[key];
+        var at = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
+        if (cache is not { } c || c.At != at)
+            cache = c = (ReadUser(), at);
+        return c.Json;
     }
 
-    public string Str(string key) => Get(key) is JsonValue v && v.TryGetValue(out string? s) ? s : Get(key)?.ToString() ?? "";
+    JsonNode? Get(string key)
+    {
+        lock (gate)
+        {
+            var user = User();
+            return user[key] is { } v && !(v is JsonValue jv && jv.TryGetValue(out string? s) && s == "" && key != "search_filler")
+                ? v.DeepClone()
+                : defaults[key]?.DeepClone();
+        }
+    }
+
+    public string Str(string key) => Get(key) is { } n ? n is JsonValue v && v.TryGetValue(out string? s) ? s : n.ToString() : "";
     public bool Bool(string key) => Get(key) is JsonValue v && v.TryGetValue(out bool b) ? b : false;
     public double Num(string key) => Get(key) is JsonValue v && v.TryGetValue(out double d) ? d : 0;
 
@@ -57,16 +71,26 @@ public sealed class Settings
     public bool Memory => Bool("memory");
     public double ProactiveMinutes => Num("proactive_minutes");
     // 前の版の「"embed_model": ""」（記憶を探すモデルを使わない）も引き継ぐ
-    public bool Embed => Bool("embed") && !(User()["embed_model"] is JsonValue v && v.TryGetValue(out string? s) && s == "");
+    public bool Embed => Bool("embed") && !LegacyNoEmbed();
+
+    bool LegacyNoEmbed()
+    {
+        lock (gate)
+            return User()["embed_model"] is JsonValue v && v.TryGetValue(out string? s) && s == "";
+    }
     public string EmbedRepo => Str("embed_repo");
     public string EmbedFile => Str("embed_file");
 
     /// <summary>変えた項目だけを書き足す（ほかの項目や順番はそのまま）。</summary>
     public void Update(IDictionary<string, JsonNode?> values)
     {
-        var user = User();
-        foreach (var (k, v) in values)
-            user[k] = v?.DeepClone();
-        File.WriteAllText(path, user.ToJsonString(Pretty) + "\n");
+        lock (gate)
+        {
+            var user = ReadUser();
+            foreach (var (k, v) in values)
+                user[k] = v?.DeepClone();
+            File.WriteAllText(path, user.ToJsonString(Pretty) + "\n");
+            cache = null;
+        }
     }
 }

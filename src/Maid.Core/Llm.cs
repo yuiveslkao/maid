@@ -43,7 +43,7 @@ public class Llm
         while (await reader.ReadLineAsync(ct) is { } line)
         {
             line = line.Trim();
-            if (!line.StartsWith("data:") || line == "data: [DONE]")
+            if (!line.StartsWith("data:", StringComparison.Ordinal) || line == "data: [DONE]")
                 continue;
             string piece;
             try
@@ -84,7 +84,7 @@ public class Llm
     static string Trim(string s) => s.Length > 300 ? s[..300] : s;
 }
 
-/// <summary>意味のベクトルを作る（2 本目の llama-server。--embedding で bge-m3 を CPU で動かす）。</summary>
+/// <summary>意味のベクトルを作る（2 本目の llama-server。--embedding で bge-m3 を GPU で動かす）。</summary>
 public class Embedder
 {
     readonly HttpClient http;

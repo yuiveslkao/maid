@@ -169,15 +169,22 @@ sealed class Conversation : IDisposable
         speaker?.Reset();
         if (proactive)
             js("proactive", []);
-        await session.SendAsync(text, piece =>
+        try
         {
-            if (rid != replyId)
-                return;
-            if (voiced)
-                speaker!.Feed(piece);
-            else
-                js("chunk", [piece]);
-        }, proactive, images);
+            await session.SendAsync(text, piece =>
+            {
+                if (rid != replyId)
+                    return;
+                if (voiced)
+                    speaker!.Feed(piece);
+                else
+                    js("chunk", [piece]);
+            }, proactive, images);
+        }
+        catch (Exception e)
+        {
+            Log.Error("返事でエラー", e);  // 画面が「返事中」のまま止まらないように、下で終わりを知らせる
+        }
         if (rid != replyId)
             return;
         if (voiced)

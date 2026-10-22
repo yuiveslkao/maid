@@ -12,6 +12,7 @@ public class Aivis
     readonly string defaultVoice;
     readonly double speed;
     List<(int Id, string Speaker, string Style)>? voices;
+    int? defaultId;  // いつもの声のスタイル ID（文ごとに探し直さない）
 
     public Aivis(string baseUrl, string voice, double speed, HttpMessageHandler? handler = null)
     {
@@ -63,7 +64,7 @@ public class Aivis
 
     public virtual async Task<byte[]> SynthesizeAsync(string text, CancellationToken ct = default)
     {
-        var id = await ResolveAsync(null, ct);
+        var id = defaultId ??= await ResolveAsync(null, ct);
         using var q = await http.PostAsync($"audio_query?text={Uri.EscapeDataString(text)}&speaker={id}", null, ct);
         q.EnsureSuccessStatusCode();
         var query = JsonNode.Parse(await q.Content.ReadAsStringAsync(ct))!.AsObject();
@@ -118,8 +119,9 @@ public sealed class Speaker
     readonly Func<string, CancellationToken, Task<byte[]?>> synthesize;
     readonly Action<string?, string?> play;
     readonly Channel<(string? Part, int Generation)> queue = Channel.CreateUnbounded<(string?, int)>();
+    readonly object gate = new();  // Feed（返事のスレッド）と Reset（割り込み）が同時に buf を触らないように
     string buf = "";
-    int generation;
+    volatile int generation;
 
     public Speaker(Func<string, CancellationToken, Task<byte[]?>> synthesize, Action<string?, string?> play)
     {
@@ -139,11 +141,20 @@ public sealed class Speaker
     /// <summary>割り込み: まだ読んでいない文は捨てる。</summary>
     public void Reset()
     {
-        Interlocked.Increment(ref generation);
-        buf = "";
+        lock (gate)
+        {
+            generation++;
+            buf = "";
+        }
     }
 
     public void Feed(string chunk, bool final = false)
+    {
+        lock (gate)
+            FeedLocked(chunk, final);
+    }
+
+    void FeedLocked(string chunk, bool final)
     {
         buf += chunk;
         var parts = new List<string>();
@@ -185,7 +196,11 @@ public sealed class Speaker
             queue.Writer.TryWrite((p, generation));
     }
 
-    public void Finish() => queue.Writer.TryWrite((null, generation));
+    public void Finish()
+    {
+        lock (gate)
+            queue.Writer.TryWrite((null, generation));
+    }
 
     async Task WorkAsync()
     {

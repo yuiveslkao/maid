@@ -15,7 +15,7 @@ public sealed class Parts : IDisposable
 
     readonly MaidPaths paths;
     readonly Win32.Job job = new();
-    readonly List<Process> running = [];
+    readonly List<(Process P, StreamWriter Log)> running = [];
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(3) };
 
     public Parts(MaidPaths paths) => this.paths = paths;
@@ -44,7 +44,8 @@ public sealed class Parts : IDisposable
             if (e.Data is null)
                 return;
             lock (log)
-                log.WriteLine(e.Data);
+                if (log.BaseStream?.CanWrite == true)  // 止めたあとに届いた分は捨てる
+                    log.WriteLine(e.Data);
         }
         p.OutputDataReceived += Write;
         p.ErrorDataReceived += Write;
@@ -54,7 +55,7 @@ public sealed class Parts : IDisposable
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
         lock (running)
-            running.Add(p);
+            running.Add((p, log));
         Log.Info($"{name} を起動しました: {exe} {string.Join(" ", psi.ArgumentList)}");
         return p;
     }
@@ -111,7 +112,7 @@ public sealed class Parts : IDisposable
     /// <summary>声。全部の声のモデルは読み込まず、使う声だけを最初の合成で読み込む。</summary>
     public Process? StartVoice()
     {
-        var exe = FindAivis();
+        var exe = FindAivis(paths);
         if (exe is null)
         {
             Log.Warn("AivisSpeech Engine が見つかりません");
@@ -120,7 +121,7 @@ public sealed class Parts : IDisposable
         return Start("aivisspeech", exe, ["--host", "127.0.0.1", "--port", AivisPort.ToString()]);
     }
 
-    public string? FindAivis() =>
+    public static string? FindAivis(MaidPaths paths) =>
         Directory.Exists(paths.Aivis) ? Directory.EnumerateFiles(paths.Aivis, "run.exe", SearchOption.AllDirectories).FirstOrDefault() : null;
 
     /// <summary>部品が返事をするようになるまで待つ。途中で部品が止まったら false。</summary>
@@ -149,7 +150,7 @@ public sealed class Parts : IDisposable
     {
         lock (running)
         {
-            foreach (var p in running)
+            foreach (var (p, log) in running)
             {
                 try
                 {
@@ -159,6 +160,9 @@ public sealed class Parts : IDisposable
                 catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
                 {
                 }
+                lock (log)
+                    log.Dispose();
+                p.Dispose();
             }
             running.Clear();
         }

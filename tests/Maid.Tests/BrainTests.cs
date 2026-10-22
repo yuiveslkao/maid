@@ -25,6 +25,25 @@ public class BrainTests
     }
 
     [Fact]
+    public async Task NotesGoBeforeTheLastWordsSoTheEarlierTalkStaysTheSame()
+    {
+        using var dir = new TempDir();
+        File.WriteAllText(Path.Combine(dir.Path, "PROFILE.md"), "- 納豆が好き");
+        using var memory = new Memory(dir.Path, (_, _) => Task.FromResult(""));
+        var llm = new FakeLlm();
+        var brain = new Brain(llm, new FakeSearch(), memory, "off", "");
+        await brain.ReplyAsync(Talk(("system", "あなたはめい。"), ("user", "おはよう")), false, _ => { });
+        await brain.ReplyAsync(Talk(("system", "あなたはめい。"), ("user", "おはよう"), ("assistant", "おはよう！"), ("user", "ごはん食べた？")), false, _ => { });
+        var (first, second) = (llm.Streamed[0], llm.Streamed[1]);
+        Assert.Equal("あなたはめい。", Msg.TextOf(second[0]));  // キャラ設定は毎回同じ
+        Assert.Equal("おはよう", Msg.TextOf(second[1]));        // 前の会話の間にはメモを残さない
+        Assert.Contains("納豆が好き", Msg.TextOf(second[^3]));
+        Assert.StartsWith("現在の日時は", Msg.TextOf(second[^2]));
+        Assert.Equal("ごはん食べた？", Msg.TextOf(second[^1]));
+        Assert.Equal(4, first.Count);
+    }
+
+    [Fact]
     public async Task SearchSaysFillerFirstAndAddsSources()
     {
         var llm = new FakeLlm();
