@@ -100,12 +100,12 @@ public sealed class Parts : IDisposable
         return Start(basic ? "brain-basic" : "brain", paths.LlamaServer, args);  // 1 回目のログ（止まった理由）を残す
     }
 
-    /// <summary>記憶を探すための、意味のベクトルを作る頭脳（bge-m3）。GPU は頭脳に空けておくため CPU で動かす。</summary>
+    /// <summary>記憶を探すための、意味のベクトルを作る頭脳（bge-m3）。GPU に載せて RAM には残さない（0.6GB ほど。CPU だと RAM を 1GB 使う）。</summary>
     public Process StartEmbed(Settings s) =>
         Start("embed", paths.LlamaServer,
         [
             "-m", paths.Model(s.EmbedFile), "--host", "127.0.0.1", "--port", EmbedPort.ToString(), "--embedding",
-            "-ngl", "0", "-c", "2048", "-np", "1", "--load-mode", "mmap", "--no-webui",
+            "-ngl", "999", "-c", "2048", "-np", "1", "--load-mode", "none", "--no-webui",
         ]);
 
     /// <summary>声。全部の声のモデルは読み込まず、使う声だけを最初の合成で読み込む。</summary>

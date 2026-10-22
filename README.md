@@ -13,7 +13,7 @@ PC を汚さない構成です。インストーラーや PATH の変更は使�
 ```
 キーボード・貼った画像・画面のスクショ ─┐
 マイク（画面で雑音・エコー除去）─▶ 話し終わりの判定 ─▶ 音声認識 ─┴─▶ maid.exe ─┬▶ 頭脳: llama-server（Gemma 4 E4B, GPU）
-                              （Silero VAD）     （ReazonSpeech, CPU）        ├▶ 記憶: data\ ＋ llama-server（bge-m3, CPU）
+                              （Silero VAD）     （ReazonSpeech, CPU）        ├▶ 記憶: data\ ＋ llama-server（bge-m3, GPU）
                                                                               ├▶ Web 検索（検索語とページ取得だけ外へ）
                                                                               └▶ 声: AivisSpeech Engine ─▶ ヘッドホン
 ```
