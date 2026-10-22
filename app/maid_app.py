@@ -13,6 +13,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -30,6 +31,17 @@ UI = Path(__file__).resolve().parent / "ui"
 UI_VERSION = 3  # app/ui/chat.html の UI_VERSION と同じにする（画面のファイルだけ古いときに気づけるように）
 EXIT_START = 10
 LAUNCH_KEYS = ("voice_reply", "mic", "search", "memory", "proactive_minutes")
+
+
+def page(name: str, storage: str | None) -> str:
+    """画面のファイルの場所。古い画面が出ないように、ウィンドウの一時保存を消し、ファイルの更新時刻を付ける。
+    （画面の設定とマイクの許可は残る）"""
+    if storage:
+        for d in Path(storage).rglob("*"):
+            if d.is_dir() and d.name in ("Cache", "Code Cache", "Service Worker"):
+                shutil.rmtree(d, ignore_errors=True)
+    path = UI / name
+    return f"{path}?v={int(path.stat().st_mtime)}"
 
 
 def run_launcher(a) -> int:
@@ -62,7 +74,7 @@ def run_launcher(a) -> int:
         def quit(self):
             holder["window"].destroy()
 
-    holder["window"] = webview.create_window(f"{character['name']} を起動", url=str(UI / "launcher.html"), js_api=Api(),
+    holder["window"] = webview.create_window(f"{character['name']} を起動", url=page("launcher.html", a.storage), js_api=Api(),
                                              width=580, height=720)
     webview.start(private_mode=False, storage_path=a.storage)
     return result["code"]
@@ -201,7 +213,7 @@ def run(a) -> int:
     threading.Thread(target=proactive_loop, args=(session, a.proactive_minutes, lambda: reply("", proactive=True),
                                                   seconds_since_input, stop),
                      kwargs={"blocked": discord_using_mic}, daemon=True).start()
-    holder["window"] = webview.create_window(character["name"], url=str(UI / "chat.html"), js_api=Api(), width=760, height=860)
+    holder["window"] = webview.create_window(character["name"], url=page("chat.html", a.storage), js_api=Api(), width=760, height=860)
     if listener:
         listener.start()
     webview.start(private_mode=False, storage_path=a.storage)
