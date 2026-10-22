@@ -21,6 +21,8 @@
     <SatelliteResourceLanguages>ja;en</SatelliteResourceLanguages>
     <Version>0.1.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- WebView2 の WPF 用の部品（maid は使わない）の参照の食い違いの警告は出さない -->
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
