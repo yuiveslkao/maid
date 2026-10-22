@@ -102,7 +102,8 @@ public sealed class Memory : IDisposable
         this.idle = idle ?? DefaultIdle;
         Directory.CreateDirectory(Path.Combine(dir, "log"));
         Directory.CreateDirectory(Path.Combine(dir, "history"));
-        db = new SqliteConnection($"Data Source={Path.Combine(dir, "memory.db")}");
+        // 接続は 1 本だけ。使い回し（プール）をすると、閉じても Windows でファイルがつかまれたままになる
+        db = new SqliteConnection($"Data Source={Path.Combine(dir, "memory.db")};Pooling=False");
         db.Open();
         Exec("CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY, started TEXT, ended TEXT, summary TEXT, embedding TEXT)");
     }
