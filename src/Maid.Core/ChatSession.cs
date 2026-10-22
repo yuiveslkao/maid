@@ -12,6 +12,16 @@ public sealed class ChatSession
 {
     public const int HistoryKeep = 40;  // 頭脳に渡す・保存する発言の数
     public const string NoBrain = "（頭脳につながりませんでした。少し待ってからもう一度話しかけてください）";
+    // キャラ設定のあとに足す、会話の決まり。小さい頭脳がやりがちな失敗（話を作る・取り違える・相手を試す）を防ぐ
+    public const string TalkRules = """
+        会話の決まり（キャラの口調のまま守る）:
+        - 相手の最後の発言に、まず正面から答える。聞かれたら答え、「考えて」と言われたら自分なりの案を 1 つは出す。
+        - 話の筋を保つ。誰が何をしたか（相手がしたことと自分がしたこと）を取り違えない。
+        - 食べ物の味や作り方など、ふつうの事実と違うことを言わない。よく知らないことは知らないと言うか、相手に聞く。
+        - 相手の発言は声を文字にしたもので、聞き間違いがある。意味が通らないときは想像で話を作らず、「〜ってこと？」と短く聞き返す。
+        - 「嫌いなの？」のように、相手の気持ちを試したり責めたりしない。すねても、すぐ前向きに戻る。
+        - 同じ言い回しを何度も繰り返さない。
+        """;
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     readonly Func<JsonArray, bool, Action<string>, CancellationToken, Task<string>> reply;
@@ -81,7 +91,7 @@ public sealed class ChatSession
         Touch();
         try
         {
-            var messages = new JsonArray { Msg.Make("system", character.Persona) };
+            var messages = new JsonArray { Msg.Make("system", character.Persona + "\n\n" + TalkRules) };
             foreach (var m in History.TakeLast(HistoryKeep))
                 messages.Add(ForBrain(m));
             if (!proactive)

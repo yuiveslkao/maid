@@ -57,7 +57,8 @@ sealed class Conversation : IDisposable
         }
         if (settings.Mic && Recognizer.AsrFiles.All(f => File.Exists(Path.Combine(paths.Asr, f))) && File.Exists(paths.SileroVad))
         {
-            listener = new Listener(() => new Recognizer(paths.Asr, paths.SileroVad, settings.SilenceMs), Win32.DiscordUsingMic, enabled: true);
+            listener = new Listener(() => new Recognizer(paths.Asr, paths.SileroVad, settings.SilenceMs, hotwords: [character.Name, character.Human]),
+                                    Win32.DiscordUsingMic, enabled: true);
             listener.OnText += Heard;
             listener.OnState += st => js("micState", [st]);
         }

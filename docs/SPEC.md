@@ -56,7 +56,7 @@ VRAM 8GB がいちばんの制約です。**GPU は頭脳（LLM）と記憶を�
 | 記憶 | `src/Maid.Core/Memory.cs` | 会話ログ・前の会話の要約・メモ |
 | Web 検索 | `src/Maid.Core/WebSearch.cs` | DuckDuckGo（だめなら Mojeek）で検索し、上位ページの本文を抜き出す（SmartReader。PDF は PdfPig） |
 | 声 | `src/Maid.Core/Voice.cs` | AivisSpeech Engine に文を渡して wav にする。文ごとに区切って順に読む |
-| 耳 | `src/Maid.Core/Listen.cs`・`ui/chat.html` | 画面（WebView2）がマイクを開き、雑音・エコーの除去と音量の自動調整をかけた 16kHz の音を渡す。Silero VAD で区切って ReazonSpeech（sherpa-onnx）で文字にする。Discord 通話中は聞かない |
+| 耳 | `src/Maid.Core/Listen.cs`・`ui/chat.html` | 画面（WebView2）がマイクを開き、雑音・エコーの除去と音量の自動調整をかけた 16kHz の音を渡す。Silero VAD で区切って ReazonSpeech（sherpa-onnx, beam search。キャラと相手の名前を聞き取りやすくする）で文字にする。ReazonSpeech は「？」を出さないので、語尾の声の高さが上がっていたら付ける（`Intonation.cs`。上がり具合は maid.log の「語尾の高さ」）。Discord 通話中は聞かない |
 | 目 | `src/Maid/Screen.cs` | 画面を 1 枚撮る（撮る間だけ自分のウィンドウを隠す）・画像を頭脳に見せる大きさにする |
 | セットアップ | `src/Maid/Setup.cs` | 足りないものだけを GitHub・Hugging Face からダウンロード（続きから再開できる）。前の版の Ollama のモデルは引き継ぐ |
 

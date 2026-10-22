@@ -4,7 +4,10 @@ using SherpaOnnx;
 
 namespace Maid;
 
-/// <summary>音（16kHz の float）を区切って文字にする。話しはじめと話し終わりは Silero VAD、文字にするのは ReazonSpeech（どちらも CPU）。</summary>
+/// <summary>
+/// 音（16kHz の float）を区切って文字にする。話しはじめと話し終わりは Silero VAD、文字にするのは ReazonSpeech（どちらも CPU）。
+/// ReazonSpeech は「？」を出さないので、語尾が上がっていたら（か「ですか」などで終わっていたら）付ける。
+/// </summary>
 public sealed class Recognizer : IDisposable
 {
     public const int Rate = 16000;
@@ -13,6 +16,7 @@ public sealed class Recognizer : IDisposable
     const double PreSeconds = 0.25;         // 話しはじめと判定される少し前の音も足す（言いはじめの子音を落とさないように）
     const int KeepSeconds = 25;             // 〃 のために残しておく音の長さ（1 回の発言は 20 秒で区切る）
     static readonly Regex NotWords = new(@"[\s、。！？!?…ー〜]+");
+    static readonly Regex AsksInWords = new(@"(ですか|ますか|でしょうか|かな|かしら)$");
     public static readonly string[] AsrFiles =
         ["encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.int8.onnx", "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt"];
 
@@ -22,7 +26,8 @@ public sealed class Recognizer : IDisposable
     float[] recent = [];
     int recentFrom;  // recent の先頭が、Reset から何サンプル目か
 
-    public Recognizer(string asrDir, string vadModel, int silenceMs = 900, int threads = 2)
+    /// <param name="hotwords">聞き取りやすくする言葉（キャラの名前など）。</param>
+    public Recognizer(string asrDir, string vadModel, int silenceMs = 900, int threads = 2, IEnumerable<string>? hotwords = null)
     {
         var config = new OfflineRecognizerConfig();
         config.FeatConfig.SampleRate = Rate;
@@ -33,7 +38,19 @@ public sealed class Recognizer : IDisposable
         config.ModelConfig.Tokens = Path.Combine(asrDir, AsrFiles[3]);
         config.ModelConfig.NumThreads = threads;
         config.ModelConfig.Provider = "cpu";
-        config.DecodingMethod = "greedy_search";
+        // 候補をいくつか残して探す（greedy より少し正確。時間は 2 割ほど増えるが、1 回の発言で数十 ms）
+        config.DecodingMethod = "modified_beam_search";
+        config.MaxActivePaths = 4;
+        var words = (hotwords ?? []).Where(w => !string.IsNullOrWhiteSpace(w)).SelectMany(w => new[] { w.Trim(), Kana.ToHiragana(w.Trim()), Kana.ToKatakana(w.Trim()) })
+                                    .Distinct().ToList();
+        if (words.Count > 0)
+        {
+            var file = Path.Combine(asrDir, "hotwords.txt");
+            File.WriteAllLines(file, words);
+            config.ModelConfig.ModelingUnit = "cjkchar";
+            config.HotwordsFile = file;
+            config.HotwordsScore = 2.0f;
+        }
         asr = new OfflineRecognizer(config);
 
         var v = new VadModelConfig();
@@ -86,8 +103,13 @@ public sealed class Recognizer : IDisposable
             if (0 <= a && a < b && b <= recent.Length)
                 speech = [.. recent[a..b], .. speech];
             var text = Decode(speech);
-            if (NotWords.Replace(text, "").Length > 0)
-                out_.Add(text);
+            if (NotWords.Replace(text, "").Length == 0)
+                continue;
+            var rise = Intonation.Rise(speech);
+            Log.Info($"語尾の高さ: {rise:+0.0;-0.0} 半音（{text}）");
+            if (rise >= Intonation.RiseSemitones || AsksInWords.IsMatch(text))
+                text += "？";
+            out_.Add(text);
         }
         return out_;
     }
@@ -210,4 +232,11 @@ public sealed class Listener
             }
         }
     }
+}
+
+/// <summary>ひらがなとカタカナの書き換え（聞き取りやすくする言葉を、どちらの書き方でも足すため）。</summary>
+public static class Kana
+{
+    public static string ToHiragana(string s) => new([.. s.Select(c => c is >= 'ァ' and <= 'ヶ' ? (char)(c - 0x60) : c)]);
+    public static string ToKatakana(string s) => new([.. s.Select(c => c is >= 'ぁ' and <= 'ゖ' ? (char)(c + 0x60) : c)]);
 }

@@ -131,7 +131,7 @@ public class ChatSessionTests
         Assert.DoesNotContain("AAAA", File.ReadAllText(path));
         await s.SendAsync("ありがとう", _ => { });
         Assert.Equal("これ何？\n（このとき画像を 1 枚見せた）", Msg.TextOf(sent[1][1]));
-        Assert.Equal("あなたはめい。", Msg.TextOf(sent[1][0]));
+        Assert.StartsWith("あなたはめい。\n\n会話の決まり", Msg.TextOf(sent[1][0]));
         Assert.Equal(4, new ChatSession((_, _, _, _) => Task.FromResult(""), Mei, path).History.Count);  // 次に開いても続きから
     }
 
