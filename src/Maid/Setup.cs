@@ -77,12 +77,23 @@ public sealed class Setup
     // ---------------------------------------------------------------- llama.cpp
     async Task InstallLlamaAsync(CancellationToken ct)
     {
-        // CUDA 12 版（古めのドライバーでも動く）。本体と CUDA の DLL は別の zip
+        // 本体と CUDA の DLL は別の zip。CUDA 12 版を選ぶ（古めのドライバーでも動く）。無ければ CUDA 13 版
+        // （リリースの名前は b7000 や v0.7.0 のように変わるので、名前の真ん中は決め打ちしない）
         var assets = await GitHubAssetsAsync("ggml-org/llama.cpp", ct);
-        var main = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, @"^llama-b\d+-bin-win-cuda-12\.[\d.]+-x64\.zip$"));
-        var cudart = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, @"^cudart-llama-bin-win-cuda-12\.[\d.]+-x64\.zip$"));
+        (string Name, string Url) main = default, cudart = default;
+        foreach (var major in new[] { "12", "13" })
+        {
+            main = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^llama-.+-bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
+            cudart = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^cudart-llama-.*bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
+            if (main.Url is not null && cudart.Url is not null)
+                break;
+        }
         if (main.Url is null || cudart.Url is null)
-            throw new InvalidOperationException("llama.cpp の最新リリースに Windows の CUDA 12 版が見つかりません");
+        {
+            Log.Warn($"llama.cpp のリリースにあったファイル: {string.Join(", ", assets.Select(a => a.Name))}");
+            throw new InvalidOperationException("llama.cpp の最新リリースに Windows の CUDA 版が見つかりません（runtime\\logs\\maid.log にファイルの一覧があります）");
+        }
+        Log.Info($"llama.cpp: {main.Name} と {cudart.Name} を使います");
         var tmp = paths.Llama + ".tmp";
         TryDelete(tmp);
         var zips = new List<string>();
