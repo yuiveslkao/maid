@@ -79,18 +79,25 @@ public sealed class Setup
     {
         // 本体と CUDA の DLL は別の zip。CUDA 12 版を選ぶ（古めのドライバーでも動く）。無ければ CUDA 13 版
         // （リリースの名前は b7000 や v0.7.0 のように変わるので、名前の真ん中は決め打ちしない）
-        var assets = await GitHubAssetsAsync("ggml-org/llama.cpp", ct);
+        // 「最新」が毎日のビルドの目印だけのこともあるので、新しい順にたどって、そろっている最初のリリースを使う
         (string Name, string Url) main = default, cudart = default;
-        foreach (var major in new[] { "12", "13" })
+        var seen = new List<string>();
+        foreach (var (tag, assets) in await GitHubReleasesAsync("ggml-org/llama.cpp", ct))
         {
-            main = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^llama-.+-bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
-            cudart = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^cudart-llama-.*bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
+            seen.Add($"{tag}: {string.Join(", ", assets.Select(a => a.Name).Where(n => n.Contains("win")).DefaultIfEmpty("（Windows 用なし）"))}");
+            foreach (var major in new[] { "12", "13" })
+            {
+                main = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^llama-.+-bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
+                cudart = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^cudart-llama-.*bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
+                if (main.Url is not null && cudart.Url is not null)
+                    break;
+            }
             if (main.Url is not null && cudart.Url is not null)
                 break;
         }
         if (main.Url is null || cudart.Url is null)
         {
-            Log.Warn($"llama.cpp のリリースにあったファイル: {string.Join(", ", assets.Select(a => a.Name))}");
+            Log.Warn($"llama.cpp のリリースにあったファイル:\n{string.Join("\n", seen)}");
             throw new InvalidOperationException("llama.cpp の最新リリースに Windows の CUDA 版が見つかりません（runtime\\logs\\maid.log にファイルの一覧があります）");
         }
         Log.Info($"llama.cpp: {main.Name} と {cudart.Name} を使います");
@@ -230,6 +237,17 @@ public sealed class Setup
     }
 
     // ---------------------------------------------------------------- 共通
+    /// <summary>新しい順のリリース（タグ, ファイル）。下書きは除く。</summary>
+    static async Task<List<(string Tag, List<(string Name, string Url)> Assets)>> GitHubReleasesAsync(string repo, CancellationToken ct)
+    {
+        var list = JsonNode.Parse(await Http.GetStringAsync($"https://api.github.com/repos/{repo}/releases?per_page=20", ct))?.AsArray() ?? [];
+        return list.Where(r => r?["draft"]?.GetValue<bool>() != true)
+                   .Select(r => (r?["tag_name"]?.GetValue<string>() ?? "",
+                                 r?["assets"]?.AsArray().Select(a => (a?["name"]?.GetValue<string>() ?? "", a?["browser_download_url"]?.GetValue<string>() ?? ""))
+                                    .Where(a => a.Item1.Length > 0).ToList() ?? []))
+                   .ToList();
+    }
+
     static async Task<List<(string Name, string Url)>> GitHubAssetsAsync(string repo, CancellationToken ct)
     {
         var rel = JsonNode.Parse(await Http.GetStringAsync($"https://api.github.com/repos/{repo}/releases/latest", ct));

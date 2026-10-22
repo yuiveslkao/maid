@@ -24,7 +24,7 @@ sealed class MainForm : Form
     Conversation? conversation;
     Setup? setup;
     string afterSetup = "launcher";
-    bool closing, closed;
+    bool closing, closed, settingUp;
 
     public MainForm(MaidPaths paths, Settings settings)
     {
@@ -198,6 +198,9 @@ sealed class MainForm : Form
         OnAsync("setup_start", async _ =>
         {
             setup ??= new Setup(paths, settings, (key, text, ratio) => Js("progress", [key, text, ratio]));
+            if (settingUp)
+                return null;  // もう動いている
+            settingUp = true;
             try
             {
                 await Task.Run(() => setup.RunAsync(CancellationToken.None));
@@ -207,6 +210,10 @@ sealed class MainForm : Form
             {
                 Log.Error("セットアップに失敗しました", e);
                 Js("setupError", [e.Message]);
+            }
+            finally
+            {
+                settingUp = false;
             }
             return null;
         });
