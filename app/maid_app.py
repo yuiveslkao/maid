@@ -84,12 +84,14 @@ def run(a) -> int:
         if window:
             window.evaluate_js(f"window.maid && maid.{fn}({','.join(json.dumps(x, ensure_ascii=False) for x in args)})")
 
-    speaker = Speaker(a.tts, lambda b64: js("audio", b64)) if a.tts else None
+    # 声で返事するときは、文を声と一緒に画面へ渡す（画面は声を鳴らしはじめたときに文を出す）
+    speaker = Speaker(a.tts, lambda b64, part: js("say", b64, part)) if a.tts else None
 
     def reply(text: str, proactive: bool = False, images: list[str] | None = None) -> None:
         # 声で割り込まれたら、前の返事の続きは画面にも声にも出さない
         state["reply"] += 1
         rid = state["reply"]
+        voiced = bool(speaker and state["voice"])  # 返事の途中で切り替えても、この返事は最初の出し方のまま
         if speaker:
             speaker.reset()
         if proactive:
@@ -98,16 +100,19 @@ def run(a) -> int:
         def chunk(piece: str) -> None:
             if rid != state["reply"]:
                 return
-            js("chunk", piece)
-            if speaker and state["voice"]:
+            if voiced:
                 speaker.feed(piece)
+            else:
+                js("chunk", piece)
 
         session.send(text, chunk, proactive=proactive, images=images)
         if rid != state["reply"]:
             return
-        if speaker and state["voice"]:
+        if voiced:
             speaker.feed("", final=True)
-        js("done")
+            speaker.finish()
+        else:
+            js("done")
 
     def capture() -> str:
         """画面を撮る。自分のウィンドウが写らないように、撮る間だけ隠す。"""
@@ -121,6 +126,7 @@ def run(a) -> int:
 
     def heard(text: str) -> None:
         """声で話しかけられた。返事の途中なら止めて、聞こえた文を送る。「画面見て」なら画面も見せる。"""
+        state["reply"] += 1  # 前の返事の続きを、この時点から出さない
         session.cancel.set()
         if speaker:
             speaker.reset()
@@ -164,13 +170,18 @@ def run(a) -> int:
 
         def set_voice(self, on):
             state["voice"] = bool(on and a.tts)
-            if speaker and not state["voice"]:
-                speaker.reset()
 
         def set_mic(self, on):
             if listener:
                 listener.set_enabled(on)
                 return listener.state
+
+        def hear(self, b64):
+            if listener:
+                listener.hear(b64)
+
+        def mic_error(self, message):
+            log.warning("マイクを使えませんでした: %s", message)
 
         def open_url(self, url):
             if str(url).startswith(("http://", "https://")):

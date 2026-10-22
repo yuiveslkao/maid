@@ -31,7 +31,7 @@ start.bat          rem 起動の画面（使うもの・アイコンを選ぶ）
 | `scripts/maid.ps1` | ダウンロード・起動・停止・診断・片付け（`maid.bat` で一覧） |
 | `app/maid_app.py` | アプリ（WebView2）。起動の画面と会話のウィンドウ |
 | `app/chat.py` | 会話の中身。頭脳の中継に話しかけ、声で返事するときは文ごとに読ませる。キャラから話しかける |
-| `app/listen.py` | 声を聞く。マイク → 話し終わりの判定（Silero VAD）→ 音声認識（ReazonSpeech） |
+| `app/listen.py` | 声を聞く。画面から届くマイクの音 → 話し終わりの判定（Silero VAD）→ 音声認識（ReazonSpeech） |
 | `app/screen.py` | 画面を 1 枚撮る・貼られた画像を小さくする（頭脳に見せる） |
 | `app/common.py` | 設定（`maid.settings.json`）・キャラ（`character.yaml`）・アイコン（`data\icons\`）の読み書き |
 | `app/ui/` | 起動の画面（`launcher.html`）と会話の画面（`chat.html`） |

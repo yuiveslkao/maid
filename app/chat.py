@@ -27,8 +27,8 @@ log = logging.getLogger("chat")
 HISTORY_KEEP = 40          # 頭脳に渡す・保存する発言の数
 # キャラから話しかけさせる合図（頭脳の中継がこれを見て、記憶から話題を選んだ指示に置き換える）
 PROACTIVE_MARK = "Please say something that would be engaging and appropriate for the current context."
-THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
-SENTENCE_END = re.compile(r"(?<=[。！？!?♪〜…])|\n")
+# 文の終わり（「！？」「。」」のように続く記号や閉じかっこは、その文に含める）
+SENTENCE_END = re.compile(r"(?<=[。！？!?♪〜…\n])(?![。！？!?♪〜…」』）)\n])")
 UNSPOKEN = [re.compile(p, re.S) for p in (r"<think>.*?</think>", r"<think>.*$", r"\[[^\]]*\]", r"\([^)]*\)",
                                           r"（[^）]*）", r"\*[^*]*\*")]
 
@@ -41,9 +41,13 @@ def spoken(text: str) -> str:
 
 
 class Speaker:
-    """返事を文ごとに区切って、声の中継に読ませる。できた声は play(base64 の wav) に渡す（届いた順に 1 つずつ）。"""
+    """返事を文ごとに区切って、声の中継に読ませる。
 
-    def __init__(self, tts_url: str, play: Callable[[str], None]):
+    文ごとに play(声の wav を base64 にしたもの, その文) を、返事の順に 1 つずつ呼ぶ。画面はその声を鳴らしはじめたときに
+    文を出すので、声と文字がそろう。読まない部分（出典の <think>…</think> など）は声なし（None）で、順番どおりに渡す。
+    finish() で入れた区切りは play(None, None)（返事の終わり）になる。"""
+
+    def __init__(self, tts_url: str, play: Callable[[str | None, str | None], None]):
         self.tts_url = tts_url.rstrip("/")
         self.play = play
         self.buf = ""
@@ -57,26 +61,49 @@ class Speaker:
         self.buf = ""
 
     def feed(self, chunk: str, final: bool = False) -> None:
-        # <think>…</think>（出典）は読まないので、文に分ける前に取り除く。閉じていなければ閉じるまで待つ
-        self.buf = THINK_BLOCK.sub("", self.buf + chunk)
-        cut = self.buf.find("<think>")
-        ready, held = (self.buf, "") if cut < 0 else (self.buf[:cut], self.buf[cut:])
-        parts = SENTENCE_END.split(ready)
-        tail = parts.pop()
-        self.buf = "" if final else tail + held
-        for part in parts + ([tail] if final else []):
-            text = spoken(part)
-            if text:
-                self.queue.put((text, self.generation))
+        self.buf += chunk
+        parts = []
+        while True:
+            cut = self.buf.find("<think>")
+            head = self.buf if cut < 0 else self.buf[:cut]
+            sentences = SENTENCE_END.split(head)
+            if cut < 0:
+                # 文の途中は、続きが来るまで待つ。ちょうど記号で終わっているときも、「！？」のように続くかもしれないので待つ
+                tail = sentences.pop()
+                if not tail and sentences:
+                    tail = sentences.pop()
+                self.buf = tail
+                parts += sentences
+                break
+            parts += sentences  # <think> の前は文の途中でも区切る
+            end = self.buf.find("</think>", cut)
+            if end < 0:
+                self.buf = self.buf[cut:]  # 閉じるまで待つ
+                break
+            parts.append(self.buf[cut:end + len("</think>")])
+            self.buf = self.buf[end + len("</think>"):]
+        if final:
+            parts.append(self.buf)
+            self.buf = ""
+        for part in parts:
+            if part:
+                self.queue.put((part, self.generation))
+
+    def finish(self) -> None:
+        self.queue.put((None, self.generation))
 
     def _worker(self) -> None:
         while True:
-            text, generation = self.queue.get()
+            part, generation = self.queue.get()
             if generation != self.generation:
                 continue
-            wav = self.synthesize(text)
-            if wav and generation == self.generation:
-                self.play(base64.b64encode(wav).decode())
+            if part is None:
+                self.play(None, None)
+                continue
+            text = spoken(part)
+            wav = self.synthesize(text) if text else None
+            if generation == self.generation:
+                self.play(base64.b64encode(wav).decode() if wav else None, part)
 
     def synthesize(self, text: str) -> bytes | None:
         try:

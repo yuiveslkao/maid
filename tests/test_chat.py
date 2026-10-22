@@ -122,17 +122,36 @@ class ChatTest(unittest.TestCase):
 
     def test_speaker_reads_sentences_without_sources(self):
         played = []
-        sp = chat.Speaker(self.url, played.append)
-        for piece in ["ちょっと調べるね。", "晴れ", "だって！", "<think>出典: https://x.example/。</think>"]:
+        sp = chat.Speaker(self.url, lambda b64, part: played.append((b64, part)))
+        for piece in ["ちょっと調べるね。", "晴れ", "だって！", "？", "<think>出典: https://x.example/。</think>"]:
             sp.feed(piece)
         sp.feed("", final=True)
+        sp.finish()
         for _ in range(100):
-            if len(played) >= 2:
+            if played and played[-1] == (None, None):
                 break
             time.sleep(0.02)
-        self.assertEqual(FakeServers.speeches, ["ちょっと調べるね。", "晴れだって！"])
-        self.assertEqual([base64.b64decode(p)[4:].decode() for p in played], ["ちょっと調べるね。", "晴れだって！"])
+        self.assertEqual(FakeServers.speeches, ["ちょっと調べるね。", "晴れだって！？"])
+        # 文ごとに、声と画面に出す文が組になって届く。出典は声なしで、最後に返事の終わり
+        self.assertEqual([(base64.b64decode(b)[4:].decode() if b else None, part) for b, part in played],
+                         [("ちょっと調べるね。", "ちょっと調べるね。"), ("晴れだって！？", "晴れだって！？"),
+                          (None, "<think>出典: https://x.example/。</think>"), (None, None)])
         self.assertEqual(chat.spoken("うん（にこっ）[joy] *えへへ*"), "うん")
+
+    def test_speaker_reset_drops_the_rest(self):
+        played, gate = [], threading.Event()
+        sp = chat.Speaker(self.url, lambda b64, part: played.append(part))
+        sp.synthesize = lambda text: (gate.wait(2), b"RIFF")[1]
+        sp.feed("いち。にい。さん。")
+        time.sleep(0.05)
+        sp.reset()  # 割り込まれた
+        sp.finish()
+        gate.set()
+        for _ in range(100):
+            if None in played:
+                break
+            time.sleep(0.02)
+        self.assertEqual(played, [None])
 
 
 class CommonTest(unittest.TestCase):

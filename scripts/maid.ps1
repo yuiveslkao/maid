@@ -52,8 +52,8 @@ $Ports = @{
 $Ports["brain-proxy"] = $Ports.BrainProxy; $Ports["tts-bridge"] = $Ports.TtsBridge
 $PyVer = "3.10"
 $AsrFiles = @("encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.int8.onnx", "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt")
-# maid が使うライブラリ（検索・本文の抜き出し・PDF / 画面（WebView2）・画像・キャラの設定 / 声を聞く）
-$MaidPackages = @("ddgs", "trafilatura", "pypdf", "pywebview", "pillow", "pyyaml", "sherpa-onnx", "sounddevice", "numpy")
+# maid が使うライブラリ（検索・本文の抜き出し・PDF / 画面（WebView2）・画像・キャラの設定 / 声を文字にする）
+$MaidPackages = @("ddgs", "trafilatura", "pypdf", "pywebview", "pillow", "pyyaml", "sherpa-onnx", "numpy")
 
 # ------------------------------------------------------------------ 設定（maid.settings.json）
 # 無ければ config\maid.settings.default.json をコピーして作る。書かれていない項目は既定値を使う

@@ -76,7 +76,7 @@
   var micBtn = document.getElementById("micBtn"), micNote = document.getElementById("micNote"), mic = false;
   var MIC_NOTES = { loading: "音声認識を準備中…", discord: "Discord 通話中は聞きません", error: "マイクを使えません" };
   var info = { name: "", human: "", icons: {} }, voice = false, current = null, currentText = "", busy = false;
-  var audioQueue = [], playing = null, attached = [];
+  var sayQueue = [], playing = null, attached = [];  // sayQueue: 声で返事するときの { 声, 文 }。null の文は返事の終わり
   var attachEl = document.getElementById("attach"), lookBtn = document.getElementById("lookBtn");
 
   function iconEl(kind) {
@@ -153,17 +153,23 @@
   }
 
   function stopAudio() {
-    audioQueue.length = 0;
+    sayQueue.length = 0;
     if (playing) { playing.pause(); playing = null; }
   }
 
+  // 声を鳴らしはじめるときに、その文を出す（声と文字をそろえる）
   function playNext() {
-    if (playing || !audioQueue.length) return;
-    var a = new Audio("data:audio/wav;base64," + audioQueue.shift());
-    playing = a;
-    var done = function () { if (playing === a) playing = null; playNext(); };
-    a.onended = done; a.onerror = done;
-    a.play().catch(done);
+    while (!playing && sayQueue.length) {
+      var item = sayQueue.shift();
+      if (item.text === null) { window.maid.done(); continue; }
+      window.maid.chunk(item.text);
+      if (!item.b64 || !voice) continue;
+      var a = new Audio("data:audio/wav;base64," + item.b64);
+      playing = a;
+      var next = function (a) { return function () { if (playing === a) { playing = null; playNext(); } }; }(a);
+      a.onended = next; a.onerror = next;
+      a.play().catch(next);
+    }
   }
 
   // Python（app/maid_app.py）から呼ばれる
@@ -180,7 +186,7 @@
       current = null;
       setBusy(false);
     },
-    audio: function (b64) { audioQueue.push(b64); playNext(); },
+    say: function (b64, text) { sayQueue.push({ b64: b64, text: text }); playNext(); },
     // 声で話しかけられた（返事の途中なら、そこで打ち切って次の返事へ）
     heard: function (t, images) {
       stopAudio();
@@ -195,7 +201,9 @@
     micState: function (st) { showMic(st); }
   };
 
+  var micFailed = false;  // 画面でマイクを開けなかった（Python から届く状態より優先して出す）
   function showMic(st) {
+    if (micFailed) st = "error";
     micBtn.className = mic ? (st === "speaking" ? "on hearing" : "on") : "";
     micNote.textContent = mic ? (MIC_NOTES[st] || "") : "";
   }
@@ -261,15 +269,76 @@
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
+  // マイク: ブラウザと同じ雑音の除去・エコーの除去・音量の自動調整をかけて、16kHz の音を 0.1 秒ごとに Python へ渡す
+  var micIn = null;
+  function sendSamples(f32) {
+    var m = micIn;
+    if (!m) return;
+    for (var i = 0; i < f32.length; i++) {
+      var v = Math.max(-1, Math.min(1, f32[i]));
+      m.pcm[m.n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      if (m.n === m.pcm.length) {
+        var bytes = new Uint8Array(m.pcm.buffer), bin = "";
+        for (var k = 0; k < bytes.length; k += 4096) bin += String.fromCharCode.apply(null, bytes.subarray(k, k + 4096));
+        window.pywebview.api.hear(btoa(bin));
+        m.n = 0;
+      }
+    }
+  }
+
+  function openMic() {
+    if (micIn) return;
+    micFailed = false;
+    micIn = { pcm: new Int16Array(1600), n: 0 };
+    var m = micIn;
+    navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+      .then(function (stream) {
+        if (micIn !== m) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+        m.stream = stream;
+        m.ctx = new AudioContext({ sampleRate: 16000 });
+        var src = m.ctx.createMediaStreamSource(stream), silent = m.ctx.createGain();
+        silent.gain.value = 0;  // 鳴らさない（つないでおかないと処理が止まる）
+        silent.connect(m.ctx.destination);
+        var code = "class P extends AudioWorkletProcessor { process(i) { if (i[0] && i[0][0]) this.port.postMessage(i[0][0].slice(0)); return true; } }" +
+                   " registerProcessor('maid-mic', P);";
+        return m.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "application/javascript" })))
+          .then(function () {
+            var node = new AudioWorkletNode(m.ctx, "maid-mic");
+            node.port.onmessage = function (e) { if (micIn === m) sendSamples(e.data); };
+            src.connect(node); node.connect(silent);
+          }, function () {  // AudioWorklet が使えないとき
+            var node = m.ctx.createScriptProcessor(4096, 1, 1);
+            node.onaudioprocess = function (e) { if (micIn === m) sendSamples(e.inputBuffer.getChannelData(0)); };
+            src.connect(node); node.connect(silent);
+          })
+          .then(function () { return m.ctx.resume(); });
+      })
+      .catch(function (e) {
+        closeMic();
+        micFailed = true;
+        showMic("error");
+        window.pywebview.api.mic_error(String(e && (e.name + ": " + e.message) || e));
+      });
+  }
+
+  function closeMic() {
+    var m = micIn;
+    micIn = null;
+    if (!m) return;
+    if (m.stream) m.stream.getTracks().forEach(function (t) { t.stop(); });
+    if (m.ctx) m.ctx.close();
+  }
+
   micBtn.onclick = function () {
     mic = !mic;
+    if (mic) openMic(); else closeMic();
     showMic("off");
     window.pywebview.api.set_mic(mic).then(showMic);
   };
   voiceBtn.onclick = function () {
     voice = !voice;
     voiceBtn.className = voice ? "on" : "";
-    if (!voice) stopAudio();
+    if (!voice && playing) { playing.pause(); playing = null; playNext(); }  // 残りの文は声なしで出す
     window.pywebview.api.set_voice(voice);
   };
   document.getElementById("clearBtn").onclick = function () {
@@ -295,6 +364,7 @@
       mic = r.mic;
       micBtn.style.display = r.micAvailable ? "" : "none";
       showMic(r.micState);
+      if (mic && r.micAvailable) openMic();
       if (!r.history.length) log.innerHTML = '<div class="empty">話しかけてみてね</div>';
       r.history.forEach(function (m) { addRow(m.role === "user" ? "user" : "character", m.content, null, m.images); });
       input.focus();
