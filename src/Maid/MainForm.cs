@@ -94,7 +94,7 @@ sealed class MainForm : Form
             }
         };
         core.WebMessageReceived += async (_, e) => await OnMessageAsync(e.WebMessageAsJson);
-        await core.AddScriptToExecuteOnDocumentCreatedAsync(Resource("ui/host.js"));
+        await core.AddScriptToExecuteOnDocumentCreatedAsync(Resources.Text("ui/host.js", Assembly.GetExecutingAssembly()));
         Show(Setup.Missing(paths, settings).Count > 0 ? "setup" : "launcher");
     }
 
@@ -109,13 +109,6 @@ sealed class MainForm : Form
         Text = title;
         ClientSize = new System.Drawing.Size(LogicalToDeviceUnits(w), LogicalToDeviceUnits(h));
         web.CoreWebView2.Navigate($"{Host}{page}.html");
-    }
-
-    static string Resource(string name)
-    {
-        using var s = Assembly.GetExecutingAssembly().GetManifestResourceStream(name) ?? throw new FileNotFoundException(name);
-        using var r = new StreamReader(s);
-        return r.ReadToEnd();
     }
 
     static CoreWebView2WebResourceResponse Serve(CoreWebView2Environment env, string uri)
@@ -233,7 +226,7 @@ sealed class MainForm : Form
         {
             ["voice_reply"] = settings.VoiceReply, ["mic"] = settings.Mic, ["search"] = settings.Search, ["memory"] = settings.Memory,
             ["proactive_minutes"] = settings.ProactiveMinutes, ["name"] = Character.Load(paths.CharacterFile).Name,
-            ["icons"] = new JsonObject { ["character"] = icons.DataUrl("character"), ["user"] = icons.DataUrl("user") },
+            ["icons"] = icons.ToJson(),
         });
         On("save_icon", a => icons.Save(Str(a, 0), Str(a, 1)));
         On("remove_icon", a => { icons.Remove(Str(a, 0)); return null; });

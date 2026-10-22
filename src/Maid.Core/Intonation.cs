@@ -3,7 +3,7 @@ namespace Maid;
 /// <summary>声の高さ（F0）から、語尾が上がっているか（問いかけか）を見る。音声認識は「？」を出さないため。</summary>
 public static class Intonation
 {
-    const int Rate = 16000;
+    const int Rate = Recognizer.Rate;
     const int Frame = 640, Hop = 160;         // 40ms ずつ、10ms ずらして見る
     const int MinLag = Rate / 500, MaxLag = Rate / 70;  // 70〜500Hz
     const double Threshold = 0.2;             // YIN のしきい値

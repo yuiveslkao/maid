@@ -46,6 +46,7 @@ public sealed class Memory : IDisposable
     const int RelatedEpisodes = 3;
     const double MinSimilarity = 0.5;
     const int HistoryKeep = 30;
+    static readonly Regex Spaces = new(@"\s+");
     static readonly Regex Remember = new("覚えて|おぼえて|忘れないで|わすれないで|忘れて|わすれて");
     static readonly JsonSerializerOptions Json = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -89,6 +90,7 @@ public sealed class Memory : IDisposable
     readonly SemaphoreSlim work = new(1, 1);          // 記憶のまとめ（頭脳を使うので長い）。会話はこれを待たない
     readonly SqliteConnection db;
     List<(long Id, string Started, string Summary, float[]? Vector)>? episodes;
+    readonly Dictionary<long, HashSet<string>> episodeGrams = [];  // 前の会話の要約の 2 文字ずつ（毎回作り直さない）
     long busySince;
 
     /// <param name="llm">(メッセージ, 最大トークン) → 返事の文字列。</param>
@@ -134,7 +136,17 @@ public sealed class Memory : IDisposable
         lock (gate)
             File.AppendAllText(Path.Combine(dir, "log", $"{t:yyyy-MM-dd}.jsonl"), row.ToJsonString(Json) + "\n");
         if (!proactive && Remember.IsMatch(user))
-            _ = Task.Run(() => UpdateNotesAsync([new Turn(t, user, assistant)]));  // 「覚えて」「忘れて」はその場で（裏で）反映する
+            _ = Task.Run(async () =>  // 「覚えて」「忘れて」はその場で（裏で）反映する
+            {
+                try
+                {
+                    await UpdateNotesAsync([new Turn(t, user, assistant)]);
+                }
+                catch (Exception e)
+                {
+                    Log.Error("「覚えて」「忘れて」を反映できませんでした", e);
+                }
+            });
     }
 
     JsonObject State()
@@ -202,7 +214,9 @@ public sealed class Memory : IDisposable
         await work.WaitAsync();
         try
         {
-            turns ??= Pending();
+            // 待っている間にほかの呼び出し（止めるときのまとめなど）が済ませた分は除く（二重にまとめない）
+            var since = State()["summarized_until"]?.GetValue<string>() ?? "";
+            turns = turns?.Where(t => string.CompareOrdinal(Iso(t.When), since) > 0).ToList() ?? Pending();
             if (turns.Count == 0 && !tidy)
                 return false;
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -463,7 +477,17 @@ public sealed class Memory : IDisposable
         if (string.IsNullOrWhiteSpace(query) || eps.Count == 0)
             return [];
         var qvec = eps.Any(e => e.Vector is not null) ? await EmbedOneAsync(query) : null;
-        return eps.Select(e => (score: 0.6 * Overlap(query, e.Summary) + (qvec is not null && e.Vector is not null ? Cosine(qvec, e.Vector) : 0), e))
+        var qgrams = Grams(query);
+        HashSet<string> GramsOf((long Id, string, string Summary, float[]?) e)
+        {
+            lock (gate)
+            {
+                if (!episodeGrams.TryGetValue(e.Id, out var g))
+                    episodeGrams[e.Id] = g = Grams(e.Summary);
+                return g;
+            }
+        }
+        return eps.Select(e => (score: 0.6 * Overlap(qgrams, GramsOf(e)) + (qvec is not null && e.Vector is not null ? Cosine(qvec, e.Vector) : 0), e))
                   .Where(x => x.score >= MinSimilarity)
                   .OrderByDescending(x => x.score)
                   .Take(limit)
@@ -536,18 +560,26 @@ public sealed class Memory : IDisposable
     }
 
     /// <summary>2 文字ずつの重なり（日本語でも使える、言葉の重なりの目安）。0〜1。</summary>
-    public static double Overlap(string a, string b)
+    public static double Overlap(string a, string b) => Overlap(Grams(a), Grams(b));
+
+    static double Overlap(HashSet<string> a, HashSet<string> b)
     {
-        static HashSet<string> Grams(string s)
-        {
-            s = Regex.Replace(s, "\\s+", "");
-            var g = new HashSet<string>();
-            for (var i = 0; i + 1 < s.Length; i++)
-                g.Add(s.Substring(i, 2));
-            return g;
-        }
-        var ga = Grams(a);
-        return ga.Count == 0 ? 0 : ga.Intersect(Grams(b)).Count() / (double)ga.Count;
+        if (a.Count == 0)
+            return 0;
+        var n = 0;
+        foreach (var g in a)
+            if (b.Contains(g))
+                n++;
+        return n / (double)a.Count;
+    }
+
+    static HashSet<string> Grams(string s)
+    {
+        s = Spaces.Replace(s, "");
+        var g = new HashSet<string>();
+        for (var i = 0; i + 1 < s.Length; i++)
+            g.Add(s.Substring(i, 2));
+        return g;
     }
 
     public static double Cosine(float[] a, float[] b)
@@ -562,5 +594,9 @@ public sealed class Memory : IDisposable
         return na > 0 && nb > 0 ? dot / (Math.Sqrt(na) * Math.Sqrt(nb)) : 0;
     }
 
-    public void Dispose() => db.Dispose();
+    public void Dispose()
+    {
+        work.Wait(TimeSpan.FromSeconds(3));  // まとめの途中なら少しだけ待つ（DB を閉じたあとに書かないように）
+        db.Dispose();
+    }
 }

@@ -27,6 +27,8 @@ public sealed class Recognizer : IDisposable
     int recentFrom;  // recent の先頭が、Reset から何サンプル目か
 
     /// <param name="hotwords">聞き取りやすくする言葉（キャラの名前など）。</param>
+    public static bool HasModels(string asrDir) => AsrFiles.All(f => File.Exists(Path.Combine(asrDir, f)));
+
     public Recognizer(string asrDir, string vadModel, int silenceMs = 900, int threads = 2, IEnumerable<string>? hotwords = null)
     {
         var config = new OfflineRecognizerConfig();
@@ -168,7 +170,8 @@ public sealed class Listener
         OnState?.Invoke(state);
     }
 
-    public Task RunAsync(CancellationToken stop) => Task.Run(() => Run(stop), stop);
+    // ずっと動くので、スレッドプールを使わず専用のスレッドで
+    public Task RunAsync(CancellationToken stop) => Task.Factory.StartNew(() => Run(stop), stop, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
     void Run(CancellationToken stop)
     {
@@ -207,21 +210,22 @@ public sealed class Listener
                     stop.WaitHandle.WaitOne(300);
                     continue;
                 }
-                byte[] pcm;
-                try
+                if (!audio.Reader.TryRead(out var pcm))
                 {
-                    using var wait = CancellationTokenSource.CreateLinkedTokenSource(stop);
-                    wait.CancelAfter(500);
-                    pcm = audio.Reader.ReadAsync(wait.Token).AsTask().GetAwaiter().GetResult();
-                }
-                catch (OperationCanceledException)
-                {
-                    Set("listening");
+                    try
+                    {
+                        if (!audio.Reader.WaitToReadAsync(stop).AsTask().Wait(500, stop))
+                            Set("listening");  // 0.5 秒届かない（画面がマイクを止めた）
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
                     continue;
                 }
-                var samples = new float[pcm.Length / 2];
+                var pcm16 = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(pcm);
+                var samples = new float[pcm16.Length];
                 for (var i = 0; i < samples.Length; i++)
-                    samples[i] = BitConverter.ToInt16(pcm, i * 2) / 32768f;
+                    samples[i] = pcm16[i] / 32768f;
                 var texts = rec.Feed(samples);
                 Set(rec.Speaking ? "speaking" : "listening");
                 foreach (var text in texts)

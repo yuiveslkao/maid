@@ -55,7 +55,7 @@ sealed class Conversation : IDisposable
             }, (b64, part) => js("say", [b64, part]));
             Voice = aivis;
         }
-        if (settings.Mic && Recognizer.AsrFiles.All(f => File.Exists(Path.Combine(paths.Asr, f))) && File.Exists(paths.SileroVad))
+        if (settings.Mic && Recognizer.HasModels(paths.Asr) && File.Exists(paths.SileroVad))
         {
             listener = new Listener(() => new Recognizer(paths.Asr, paths.SileroVad, settings.SilenceMs, hotwords: [character.Name, character.Human]),
                                     Win32.DiscordUsingMic, enabled: true);
@@ -226,7 +226,7 @@ sealed class Conversation : IDisposable
     {
         ["name"] = character.Name,
         ["human"] = character.Human,
-        ["icons"] = new JsonObject { ["character"] = icons.DataUrl("character"), ["user"] = icons.DataUrl("user") },
+        ["icons"] = icons.ToJson(),
         ["history"] = new JsonArray(session.History.Select(m => (JsonNode)m.DeepClone()).ToArray()),
         ["voice"] = voice,
         ["voiceAvailable"] = speaker is not null,

@@ -28,7 +28,7 @@ public sealed class ChatSession
     readonly Character character;
     readonly string? historyPath;
     readonly SemaphoreSlim one = new(1, 1);
-    CancellationTokenSource cancel = new();
+    readonly List<CancellationTokenSource> pending = [];  // 返事中と、その後ろで待っている話しかけ
     long lastActivity = Environment.TickCount64;
 
     public ChatSession(Func<JsonArray, bool, Action<string>, CancellationToken, Task<string>> reply, Character character, string? historyPath)
@@ -80,17 +80,33 @@ public sealed class ChatSession
     }
 
     /// <summary>今の返事を止める（割り込み・「止める」）。</summary>
-    public void Cancel() => cancel.Cancel();
+    public void Cancel()
+    {
+        lock (pending)
+            foreach (var c in pending)
+                c.Cancel();  // 待っているものも止める（続けて話しかけたとき、間の返事を作らない）
+    }
 
     /// <summary>頭脳に話しかけ、返事を少しずつ onChunk に渡す。戻り値は返事の全文。images は見せる画像（data URL）。</summary>
     public async Task<string> SendAsync(string text, Action<string> onChunk, bool proactive = false, IReadOnlyList<string>? images = null)
     {
+        using var cancel = new CancellationTokenSource();
+        lock (pending)
+            pending.Add(cancel);
         await one.WaitAsync();
-        cancel = new CancellationTokenSource();
         Busy = true;
         Touch();
         try
         {
+            if (cancel.IsCancellationRequested)  // 待っている間に次の話しかけが来た: 言ったことだけ残す
+            {
+                if (!proactive)
+                {
+                    History.Add(Said(text, images));
+                    Save();
+                }
+                return "";
+            }
             var messages = new JsonArray { Msg.Make("system", character.Persona + "\n\n" + TalkRules) };
             foreach (var m in History.TakeLast(HistoryKeep))
                 messages.Add(ForBrain(m));
@@ -114,10 +130,7 @@ public sealed class ChatSession
             }
             if (!proactive)
             {
-                var said = Msg.Make("user", text);
-                if (images is { Count: > 0 })
-                    said["images"] = images.Count;
-                History.Add(said);
+                History.Add(Said(text, images));
                 History.Add(Msg.Make("assistant", full));
                 Save();
             }
@@ -125,10 +138,20 @@ public sealed class ChatSession
         }
         finally
         {
+            lock (pending)
+                pending.Remove(cancel);
             Busy = false;
             Touch();
             one.Release();
         }
+    }
+
+    static JsonObject Said(string text, IReadOnlyList<string>? images)
+    {
+        var said = Msg.Make("user", text);
+        if (images is { Count: > 0 })
+            said["images"] = images.Count;  // 画像は残さず、何枚見せたかだけ
+        return said;
     }
 
     public void Clear()

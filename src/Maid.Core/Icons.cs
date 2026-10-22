@@ -18,6 +18,9 @@ public sealed class Icons
     public string? Find(string kind) =>
         Types.Values.Select(ext => Path.Combine(dir, $"{kind}.{ext}")).FirstOrDefault(File.Exists);
 
+    /// <summary>画面に渡す {"character": data URL か null, "user": …}。</summary>
+    public System.Text.Json.Nodes.JsonObject ToJson() => new(Kinds.Select(k => KeyValuePair.Create(k, (System.Text.Json.Nodes.JsonNode?)DataUrl(k))));
+
     public string? DataUrl(string kind)
     {
         var p = Find(kind);

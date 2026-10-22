@@ -46,7 +46,7 @@ public sealed class Setup
             out_.Add(new("model", $"頭脳のモデル（{s.ModelFile}）", "約 5GB"));
         if (s.Memory && s.Embed && !File.Exists(p.Model(s.EmbedFile)))
             out_.Add(new("embed", "記憶を探すモデル（bge-m3）", "約 0.6〜1.2GB"));
-        if (s.Mic && !Recognizer.AsrFiles.All(f => File.Exists(Path.Combine(p.Asr, f))))
+        if (s.Mic && !Recognizer.HasModels(p.Asr))
             out_.Add(new("asr", "声を文字にするモデル（ReazonSpeech）", "約 700MB"));
         if (s.Mic && !File.Exists(p.SileroVad))
             out_.Add(new("vad", "話し終わりを見つけるモデル（Silero VAD）", "約 2MB"));
@@ -221,7 +221,7 @@ public sealed class Setup
         progress("asr", "展開しています…", null);
         // 必要なファイルだけ取り出す（tar.exe は Windows に標準で入っている）
         await RunAsync("tar.exe", ["-xjf", archive, "-C", paths.Models, .. Recognizer.AsrFiles.Select(f => $"*{ReazonName}/{f}")], ct);
-        if (!Recognizer.AsrFiles.All(f => File.Exists(Path.Combine(paths.Asr, f))))
+        if (!Recognizer.HasModels(paths.Asr))
             throw new InvalidOperationException("音声認識のモデルを展開できませんでした");
         File.Delete(archive);
     }

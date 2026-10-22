@@ -1,5 +1,5 @@
 # キャラの設定（maid フォルダの character.yaml。無ければ maid が config\character.default.yaml からコピーして作る）。
-# 今の日時と Web 検索の結果は頭脳の中継 (services/llm_proxy.py) が足すので、ここに書かなくてよい。
+# 今の日時・覚えていること・Web 検索の結果と、会話の決まり（ChatSession.cs の TalkRules）は maid が足すので、ここに書かなくてよい。
 
 name: "メイド"        # キャラの名前（画面に出る）
 human: "ご主人様"     # あなたの名前（画面に出る）

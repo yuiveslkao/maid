@@ -120,6 +120,25 @@ public class ChatSessionTests
     static readonly Character Mei = new("めい", "ぱぱ", "あなたはめい。");
 
     [Fact]
+    public async Task CancelAlsoStopsTheOneWaitingInLine()
+    {
+        var asked = new List<string>();
+        var s = new ChatSession(async (m, p, emit, ct) =>
+        {
+            asked.Add(Msg.LastUserText(m));
+            await Task.Delay(Timeout.Infinite, ct);  // 止められるまで返事をしている
+            return "";
+        }, Mei, null);
+        var a = s.SendAsync("A", _ => { });
+        var b = s.SendAsync("B", _ => { });  // A の後ろで待つ
+        await Task.Delay(100);
+        s.Cancel();
+        await Task.WhenAll(a, b);
+        Assert.Equal(["A"], asked);  // B の返事は作らない
+        Assert.Equal(["A", "", "B"], s.History.Select(Msg.TextOf));  // B が言ったことは残す
+    }
+
+    [Fact]
     public async Task ImagesAreSentButOnlyTheirCountIsKept()
     {
         using var dir = new TempDir();
