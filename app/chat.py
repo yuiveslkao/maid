@@ -97,13 +97,16 @@ class Speaker:
             part, generation = self.queue.get()
             if generation != self.generation:
                 continue
-            if part is None:
-                self.play(None, None)
-                continue
-            text = spoken(part)
-            wav = self.synthesize(text) if text else None
-            if generation == self.generation:
-                self.play(base64.b64encode(wav).decode() if wav else None, part)
+            try:
+                if part is None:
+                    self.play(None, None)
+                    continue
+                text = spoken(part)
+                wav = self.synthesize(text) if text else None
+                if generation == self.generation:
+                    self.play(base64.b64encode(wav).decode() if wav else None, part)
+            except Exception:
+                log.exception("声か文を画面に渡せませんでした")  # 1 つ失敗しても、次の文からは続ける
 
     def synthesize(self, text: str) -> bytes | None:
         try:

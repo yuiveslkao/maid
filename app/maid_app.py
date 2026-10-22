@@ -27,6 +27,7 @@ from winutil import discord_using_mic, seconds_since_input  # noqa: E402
 
 log = logging.getLogger("maid_app")
 UI = Path(__file__).resolve().parent / "ui"
+UI_VERSION = 3  # app/ui/chat.html の UI_VERSION と同じにする（画面のファイルだけ古いときに気づけるように）
 EXIT_START = 10
 LAUNCH_KEYS = ("voice_reply", "mic", "search", "memory", "proactive_minutes")
 
@@ -81,8 +82,12 @@ def run(a) -> int:
 
     def js(fn: str, *args) -> None:
         window = holder.get("window")
-        if window:
+        if not window:
+            return
+        try:
             window.evaluate_js(f"window.maid && maid.{fn}({','.join(json.dumps(x, ensure_ascii=False) for x in args)})")
+        except Exception as e:
+            log.warning("画面の maid.%s を呼べませんでした: %s", fn, e)
 
     # 声で返事するときは、文を声と一緒に画面へ渡す（画面は声を鳴らしはじめたときに文を出す）
     speaker = Speaker(a.tts, lambda b64, part: js("say", b64, part)) if a.tts else None
@@ -147,7 +152,10 @@ def run(a) -> int:
                             silence_ms=a.silence_ms, blocked=discord_using_mic, enabled=a.mic)
 
     class Api:
-        def init(self):
+        def init(self, version=None):
+            if version != UI_VERSION:
+                log.warning("画面のファイル（%s）が古いようです（%s、必要なのは %s）。git pull し直してください",
+                            UI / "chat.html", version, UI_VERSION)
             return {"name": character["name"], "human": character["human"],
                     "icons": {k: icons.data_url(k) for k in ("character", "user")},
                     "history": session.history, "voice": state["voice"], "voiceAvailable": bool(a.tts),
