@@ -79,6 +79,17 @@ public sealed class Setup
     {
         // 本体と CUDA の DLL は別の zip。CUDA 12 版を選ぶ（古めのドライバーでも動く）。無ければ CUDA 13 版
         // （リリースの名前は b7000 や v0.7.0 のように変わるので、名前の真ん中は決め打ちしない）
+        // 自分でダウンロードした zip を runtime\downloads に置いてあれば、それを使う
+        static string? Local(string dir, string pattern) =>
+            Directory.EnumerateFiles(dir, "*.zip").Where(f => Regex.IsMatch(Path.GetFileName(f), pattern)).OrderDescending().FirstOrDefault();
+        var localMain = Local(paths.Downloads, @"^llama-.+-bin-win-cuda-\d+\.[\d.]+-x64\.zip$");
+        var localCudart = Local(paths.Downloads, @"^cudart-llama-.*bin-win-cuda-\d+\.[\d.]+-x64\.zip$");
+        if (localMain is not null && localCudart is not null)
+        {
+            Log.Info($"llama.cpp: 置いてあった {Path.GetFileName(localMain)} と {Path.GetFileName(localCudart)} を使います");
+            ExtractLlama(localMain, localCudart);
+            return;
+        }
         // 「最新」が毎日のビルドの目印だけのこともあるので、新しい順にたどって、そろっている最初のリリースを使う
         (string Name, string Url) main = default, cudart = default;
         var seen = new List<string>();
@@ -101,22 +112,28 @@ public sealed class Setup
             throw new InvalidOperationException("llama.cpp の最新リリースに Windows の CUDA 版が見つかりません（runtime\\logs\\maid.log にファイルの一覧があります）");
         }
         Log.Info($"llama.cpp: {main.Name} と {cudart.Name} を使います");
-        var tmp = paths.Llama + ".tmp";
-        TryDelete(tmp);
         var zips = new List<string>();
         foreach (var (name, url) in new[] { main, cudart })
         {
             zips.Add(Path.Combine(paths.Downloads, name));
             await DownloadAsync("llama", url, zips[^1], ct);
         }
+        ExtractLlama(zips[0], zips[1]);
+    }
+
+    void ExtractLlama(string mainZip, string cudartZip)
+    {
         progress("llama", "展開しています…", null);
-        ZipFile.ExtractToDirectory(zips[0], tmp, overwriteFiles: true);
+        var tmp = paths.Llama + ".tmp";
+        TryDelete(tmp);
+        ZipFile.ExtractToDirectory(mainZip, tmp, overwriteFiles: true);
         var bin = Path.GetDirectoryName(Directory.EnumerateFiles(tmp, "llama-server.exe", SearchOption.AllDirectories).First())!;
-        ZipFile.ExtractToDirectory(zips[1], bin, overwriteFiles: true);  // CUDA の DLL は llama-server.exe の隣に
+        ZipFile.ExtractToDirectory(cudartZip, bin, overwriteFiles: true);  // CUDA の DLL は llama-server.exe の隣に
         TryDelete(paths.Llama);
         Directory.Move(bin, paths.Llama);
         TryDelete(tmp);
-        zips.ForEach(File.Delete);
+        File.Delete(mainZip);
+        File.Delete(cudartZip);
     }
 
     // ---------------------------------------------------------------- モデル

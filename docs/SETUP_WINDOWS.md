@@ -11,15 +11,21 @@
 - やめたくなったら maid フォルダを消せば終わりです（例外は「9. 片付け方」）。
 - PC に元から必要なもの: Windows 10 / 11（64 ビット）、NVIDIA のドライバー、WebView2（Windows 11 には標準で入っています）、空き容量 15GB 程度。
 
-## 2. maid.exe を手に入れる
+## 2. maid.exe を作る
 
-1. GitHub の **Actions** → 一番新しい「build」→ 下の **Artifacts** の `maid-win-x64` をダウンロードして展開します。
-2. 中の `maid.exe` と `lib` フォルダを、maid フォルダ（このリポジトリのフォルダ）に置きます。
+maid フォルダ（このリポジトリのフォルダ）で `build.bat` をダブルクリックします。`maid.exe` と `lib\` ができます。
+
+- 初回だけ、C# のビルドに使う .NET SDK（約 300MB）を `runtime\dotnet` に入れます（インストーラーは使わず、PATH も変えない）。
+- 2 回目からは数十秒です。更新するときは `git pull` → `build.bat`。
+- maid.exe が動いている間は作れないので、閉じてから実行します。
+
+GitHub の **Actions** → 「build」→ **Artifacts** の `maid-win-x64` からダウンロードすることもできます（Chrome が止めたら、ダウンロード一覧から「保存」）。
 
 ```
 maid\
 ├ maid.exe            ← ダブルクリックで起動
 ├ lib\                ← maid.exe が使う部品（消さない）
+├ build.bat           ← maid.exe を作る
 ├ maid.settings.json  ← いつもの設定（初回に作る）
 ├ character.yaml      ← キャラの設定（初回に作る）
 ├ data\               ← 記憶・会話・アイコン
@@ -30,6 +36,9 @@ maid\
 
 `maid.exe` をダブルクリックすると、足りないものがあればセットアップの画面が開きます。「始める」で `runtime\` にダウンロードします。
 途中で止めても、次は続きから再開します。
+
+> llama.cpp を自分でダウンロードしたいとき: [リリースのページ](https://github.com/ggml-org/llama.cpp/releases) から
+> `llama-…-bin-win-cuda-12.4-x64.zip` と `cudart-llama-bin-win-cuda-12.4-x64.zip` を `runtime\downloads\` に置いてから「始める」を押すと、それを使います。
 
 | もの | 用途 | 大きさの目安 |
 |---|---|---|
