@@ -126,7 +126,8 @@ static partial class Win32
         public UIntPtr PeakJobMemoryUsed;
     }
 
-    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    // LibraryImport は名前を書いたとおりに探すので、文字列の関数は末尾の W まで書く
+    [LibraryImport("kernel32.dll", EntryPoint = "SetDllDirectoryW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetDllDirectory(string path);
 
