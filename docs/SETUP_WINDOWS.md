@@ -37,8 +37,10 @@ maid\
 `maid.exe` をダブルクリックすると、足りないものがあればセットアップの画面が開きます。「始める」で `runtime\` にダウンロードします。
 途中で止めても、次は続きから再開します。
 
-> llama.cpp を自分でダウンロードしたいとき: [リリースのページ](https://github.com/ggml-org/llama.cpp/releases) から
-> `llama-…-bin-win-cuda-12.4-x64.zip` と `cudart-llama-bin-win-cuda-12.4-x64.zip` を `runtime\downloads\` に置いてから「始める」を押すと、それを使います。
+> **llama.cpp の版**: 動くのを確かめた版（`Setup.cs` の `LlamaTag`。今は b11819）に決めてあり、勝手には更新しません。
+> 新しい版が出ると起動の画面に出ます（確かめるのは 1 日 1 回）。試したいときは、[リリースのページ](https://github.com/ggml-org/llama.cpp/releases) から
+> `llama-…-bin-win-cuda-12.4-x64.zip` と `cudart-llama-bin-win-cuda-12.4-x64.zip` を `runtime\downloads\` に置き、`runtime\llama\` を消してから maid.exe を起動します。
+> 動かなかったら、もう一度 `runtime\llama\` を消して起動すれば、決めてある版に戻ります。
 
 | もの | 用途 | 大きさの目安 |
 |---|---|---|
@@ -179,7 +181,9 @@ maid.exe が終わると、裏の部品も必ず一緒に止まります。
 | 声が出ない | `runtime\logs\aivisspeech.log`。maid.log に「声 '…' が AivisSpeech に見つかりません」なら voice の名前を確かめる |
 | 調べてくれない | maid.log に「検索「…」」が出ているか。出ていなければ「調べて」と言ってみる |
 
-**メモリの使い方を見る**: maid が動いている間に、PowerShell を maid フォルダで開いて次を貼ります（「専有MB」が実際に占有している量）。
+**メモリの使い方を見る**: maid が動いている間に、PowerShell を maid フォルダで開いて次を貼ります。
+RAM を本当に使っているのは「使用中MB」です（「専有MB」には GPU に置いた分の予約も入るので、頭脳はここが大きく見えます）。
+全体は、タスクマネージャーの「パフォーマンス」→「メモリ」の「使用中」と、「GPU」の「専用 GPU メモリ」を、起動前と比べます。
 
 ```powershell
 Get-Process | ? { $_.Path -like "$PWD\*" -or $_.Name -eq "msedgewebview2" } | Group-Object Name | % { [pscustomobject]@{名前=$_.Name; 使用中MB=[int](($_.Group | Measure-Object WorkingSet64 -Sum).Sum/1MB); 専有MB=[int](($_.Group | Measure-Object PrivateMemorySize64 -Sum).Sum/1MB)} } | Sort-Object 専有MB -Descending

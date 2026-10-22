@@ -21,6 +21,7 @@
   .iconbox { text-align: center; }
   .iconbox img, .iconbox .ph { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); display: block; margin: 0 auto 6px; background: var(--line); }
   .iconbox button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 3px 10px; cursor: pointer; margin: 2px; }
+  #update { display: none; color: var(--sub); font-size: 12px; line-height: 1.6; }
   .bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px;
     background: var(--panel); border-top: 1px solid var(--line); }
   .bar button { font: inherit; font-weight: bold; border-radius: 12px; padding: 9px 22px; cursor: pointer; border: 1px solid var(--line); background: #fff; }
@@ -51,6 +52,8 @@
   </div>
   <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
 </section>
+
+<section id="update"></section>
 
 <div class="bar">
   <button id="quit">やめる</button>
@@ -114,6 +117,12 @@
       $("proactive_minutes").disabled = !(s.proactive_minutes > 0);
       showIcon("character", s.icons.character);
       showIcon("user", s.icons.user);
+    });
+    api.llama_update().then(function (u) {
+      if (!u) return;
+      $("update").style.display = "block";
+      $("update").textContent = "llama.cpp に新しい版（" + u.latest + "）があります。今の版（" + u.installed +
+        "）のままで動きます。試したいときは docs\\SETUP_WINDOWS.md の「llama.cpp の版」を見てください。";
     });
   });
 })();

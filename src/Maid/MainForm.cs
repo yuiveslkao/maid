@@ -242,6 +242,9 @@ sealed class MainForm : Form
             Next("chat");
             return null;
         });
+        OnAsync("llama_update", async _ => await Setup.LlamaUpdateAsync(paths, CancellationToken.None) is { } u
+            ? new JsonObject { ["installed"] = u.Installed, ["latest"] = u.Latest }
+            : null);
         On("quit", _ => { Close(); return null; });
 
         // 会話

@@ -13,6 +13,8 @@ public sealed class Setup
 {
     public sealed record Need(string Key, string Title, string Size);
 
+    /// <summary>使う llama.cpp の版（動くのを確かめた版）。</summary>
+    public const string LlamaTag = "b11819";
     const string ReazonName = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01";
     static readonly HttpClient Http = MakeHttp();
     readonly MaidPaths paths;
@@ -78,8 +80,8 @@ public sealed class Setup
     async Task InstallLlamaAsync(CancellationToken ct)
     {
         // 本体と CUDA の DLL は別の zip。CUDA 12 版を選ぶ（古めのドライバーでも動く）。無ければ CUDA 13 版
-        // （リリースの名前は b7000 や v0.7.0 のように変わるので、名前の真ん中は決め打ちしない）
-        // 自分でダウンロードした zip を runtime\downloads に置いてあれば、それを使う
+        // 版は LlamaTag に決めてある（新しい版でオプションが変わって動かなくなることがあるため）。
+        // 自分でダウンロードした zip を runtime\downloads に置いてあれば、それを使う（新しい版を試したいとき）
         static string? Local(string dir, string pattern) =>
             Directory.EnumerateFiles(dir, "*.zip").Where(f => Regex.IsMatch(Path.GetFileName(f), pattern)).OrderDescending().FirstOrDefault();
         var localMain = Local(paths.Downloads, @"^llama-.+-bin-win-cuda-\d+\.[\d.]+-x64\.zip$");
@@ -87,29 +89,22 @@ public sealed class Setup
         if (localMain is not null && localCudart is not null)
         {
             Log.Info($"llama.cpp: 置いてあった {Path.GetFileName(localMain)} と {Path.GetFileName(localCudart)} を使います");
-            ExtractLlama(localMain, localCudart);
+            ExtractLlama(localMain, localCudart, Regex.Match(Path.GetFileName(localMain), @"^llama-(.+?)-bin-").Groups[1].Value);
             return;
         }
-        // 「最新」が毎日のビルドの目印だけのこともあるので、新しい順にたどって、そろっている最初のリリースを使う
+        var assets = await GitHubReleaseAsync("ggml-org/llama.cpp", LlamaTag, ct);
         (string Name, string Url) main = default, cudart = default;
-        var seen = new List<string>();
-        foreach (var (tag, assets) in await GitHubReleasesAsync("ggml-org/llama.cpp", ct))
+        foreach (var major in new[] { "12", "13" })
         {
-            seen.Add($"{tag}: {string.Join(", ", assets.Select(a => a.Name).Where(n => n.Contains("win")).DefaultIfEmpty("（Windows 用なし）"))}");
-            foreach (var major in new[] { "12", "13" })
-            {
-                main = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^llama-.+-bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
-                cudart = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^cudart-llama-.*bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
-                if (main.Url is not null && cudart.Url is not null)
-                    break;
-            }
+            main = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^llama-.+-bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
+            cudart = assets.FirstOrDefault(a => Regex.IsMatch(a.Name, $@"^cudart-llama-.*bin-win-cuda-{major}\.[\d.]+-x64\.zip$"));
             if (main.Url is not null && cudart.Url is not null)
                 break;
         }
         if (main.Url is null || cudart.Url is null)
         {
-            Log.Warn($"llama.cpp のリリースにあったファイル:\n{string.Join("\n", seen)}");
-            throw new InvalidOperationException("llama.cpp の最新リリースに Windows の CUDA 版が見つかりません（runtime\\logs\\maid.log にファイルの一覧があります）");
+            Log.Warn($"llama.cpp {LlamaTag} のファイル: {string.Join(", ", assets.Select(a => a.Name))}");
+            throw new InvalidOperationException($"llama.cpp {LlamaTag} に Windows の CUDA 版が見つかりません（runtime\\logs\\maid.log にファイルの一覧があります）");
         }
         Log.Info($"llama.cpp: {main.Name} と {cudart.Name} を使います");
         var zips = new List<string>();
@@ -118,10 +113,10 @@ public sealed class Setup
             zips.Add(Path.Combine(paths.Downloads, name));
             await DownloadAsync("llama", url, zips[^1], ct);
         }
-        ExtractLlama(zips[0], zips[1]);
+        ExtractLlama(zips[0], zips[1], LlamaTag);
     }
 
-    void ExtractLlama(string mainZip, string cudartZip)
+    void ExtractLlama(string mainZip, string cudartZip, string tag)
     {
         progress("llama", "展開しています…", null);
         var tmp = paths.Llama + ".tmp";
@@ -131,6 +126,7 @@ public sealed class Setup
         ZipFile.ExtractToDirectory(cudartZip, bin, overwriteFiles: true);  // CUDA の DLL は llama-server.exe の隣に
         TryDelete(paths.Llama);
         Directory.Move(bin, paths.Llama);
+        File.WriteAllText(LlamaVersionFile(paths), tag);
         TryDelete(tmp);
         File.Delete(mainZip);
         File.Delete(cudartZip);
@@ -255,23 +251,50 @@ public sealed class Setup
 
     // ---------------------------------------------------------------- 共通
     /// <summary>新しい順のリリース（タグ, ファイル）。下書きは除く。</summary>
-    static async Task<List<(string Tag, List<(string Name, string Url)> Assets)>> GitHubReleasesAsync(string repo, CancellationToken ct)
+    static async Task<List<(string Name, string Url)>> GitHubReleaseAsync(string repo, string tag, CancellationToken ct) =>
+        Assets(JsonNode.Parse(await Http.GetStringAsync($"https://api.github.com/repos/{repo}/releases/tags/{tag}", ct)));
+
+    static async Task<List<(string Name, string Url)>> GitHubAssetsAsync(string repo, CancellationToken ct) =>
+        Assets(JsonNode.Parse(await Http.GetStringAsync($"https://api.github.com/repos/{repo}/releases/latest", ct)));
+
+    static List<(string Name, string Url)> Assets(JsonNode? release) =>
+        release?["assets"]?.AsArray()
+               .Select(a => (a?["name"]?.GetValue<string>() ?? "", a?["browser_download_url"]?.GetValue<string>() ?? ""))
+               .Where(a => a.Item1.Length > 0).ToList() ?? [];
+
+    static string LlamaVersionFile(MaidPaths p) => Path.Combine(p.Llama, "version.txt");
+
+    /// <summary>
+    /// llama.cpp に今より新しい版があれば、その名前（b12000 など）。確かめるのは 1 日 1 回（runtime\llama-update.txt に覚える）。
+    /// 知らせるだけで、更新はしない。
+    /// </summary>
+    public static async Task<(string Installed, string Latest)?> LlamaUpdateAsync(MaidPaths p, CancellationToken ct)
     {
-        var list = JsonNode.Parse(await Http.GetStringAsync($"https://api.github.com/repos/{repo}/releases?per_page=20", ct))?.AsArray() ?? [];
-        return list.Where(r => r?["draft"]?.GetValue<bool>() != true)
-                   .Select(r => (r?["tag_name"]?.GetValue<string>() ?? "",
-                                 r?["assets"]?.AsArray().Select(a => (a?["name"]?.GetValue<string>() ?? "", a?["browser_download_url"]?.GetValue<string>() ?? ""))
-                                    .Where(a => a.Item1.Length > 0).ToList() ?? []))
-                   .ToList();
+        if (!File.Exists(p.LlamaServer))
+            return null;
+        var installed = File.Exists(LlamaVersionFile(p)) ? File.ReadAllText(LlamaVersionFile(p)).Trim() : LlamaTag;
+        var cache = Path.Combine(p.Runtime, "llama-update.txt");
+        string latest;
+        if (File.Exists(cache) && DateTime.Now - File.GetLastWriteTime(cache) < TimeSpan.FromDays(1))
+            latest = File.ReadAllText(cache).Trim();
+        else
+        {
+            try
+            {
+                var tags = JsonNode.Parse(await Http.GetStringAsync("https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10", ct))?.AsArray() ?? [];
+                latest = tags.Select(r => r?["tag_name"]?.GetValue<string>() ?? "").FirstOrDefault(t => Build(t) > 0) ?? "";
+                File.WriteAllText(cache, latest);
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or System.Text.Json.JsonException)
+            {
+                Log.Info($"llama.cpp の新しい版を確かめられませんでした: {e.Message}");
+                return null;
+            }
+        }
+        return Build(latest) > Build(installed) && Build(installed) > 0 ? (installed, latest) : null;
     }
 
-    static async Task<List<(string Name, string Url)>> GitHubAssetsAsync(string repo, CancellationToken ct)
-    {
-        var rel = JsonNode.Parse(await Http.GetStringAsync($"https://api.github.com/repos/{repo}/releases/latest", ct));
-        return rel?["assets"]?.AsArray()
-                  .Select(a => (a?["name"]?.GetValue<string>() ?? "", a?["browser_download_url"]?.GetValue<string>() ?? ""))
-                  .Where(a => a.Item1.Length > 0).ToList() ?? [];
-    }
+    static int Build(string tag) => Regex.Match(tag, @"^b(\d+)$") is { Success: true } m ? int.Parse(m.Groups[1].Value) : 0;
 
     /// <summary>ダウンロードする。途中で切れても、次は続きから（.part に書き、終わったら名前を変える）。</summary>
     async Task DownloadAsync(string key, string url, string dest, CancellationToken ct)
